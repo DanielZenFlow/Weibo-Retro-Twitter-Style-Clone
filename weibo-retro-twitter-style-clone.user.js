@@ -231,7 +231,7 @@
 
   // === 黑名单数据与同步 ===
   const UID_KEY = 'WB_BL_list'; // 本地存 UID
-  const THROTTLE_MS = 100; // 节流（毫秒）
+  const THROTTLE_MS = 300; // 节流（毫秒）
   const MAX_418 = 3; // 连续 418 次数上限
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
