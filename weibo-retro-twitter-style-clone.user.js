@@ -1,4 +1,5 @@
 // ==UserScript==
+// @sandbox      raw
 // @name         Weibo Retro Twitter-Style Clone
 // @namespace    https://github.com/DanielZenFlow
 // @version      1.0.0
@@ -11,6 +12,7 @@
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
 // @grant        GM_getValue
+// @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_openInTab
@@ -470,7 +472,10 @@
     ) {
       try {
         const data = await res.clone().json();
-        return new Response(JSON.stringify(filterData(data)), res);
+        return new Response(
+          JSON.stringify(filterData(data)),
+          { status: res.status, statusText: res.statusText, headers: res.headers }
+        );
       } catch {}
     }
     return res;
@@ -487,7 +492,8 @@
         // 屏蔽"全部关注"流
         if (this._url.includes('unreadfriendstimeline')) {
           Object.defineProperty(this, 'responseText', {
-            value: JSON.stringify({
+            configurable: true,
+            get: () => JSON.stringify({
               ok: 1,
               statuses: [],
               since_id_str: '0',
@@ -503,7 +509,8 @@
           try {
             const o = JSON.parse(this.responseText);
             Object.defineProperty(this, 'responseText', {
-              value: JSON.stringify(filterData(o)),
+              configurable: true,
+              get: () => JSON.stringify(filterData(o)),
             });
           } catch {}
         }
@@ -632,3 +639,232 @@
     `[WB-BL] Author: DanielZenFlow | GitHub: https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite`
   );
 })();
+
+/* === Settings v4 (no whitelist) + DOM toggles + BL add/remove === */
+(function(){
+  'use strict';
+  const UID_KEY = 'WB_BL_list';
+
+  const DEFAULTS = {
+    hideHotSearch: true,
+    hideSuggestedPeople: true
+  };
+
+  function loadCfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(GM_getValue('cfg', '{}'))); }
+    catch { return Object.assign({}, DEFAULTS); }
+  }
+  function saveCfg(cfg) { GM_setValue('cfg', JSON.stringify(cfg||{})); }
+  let CFG = loadCfg();
+
+  // ---- BL Store helpers (operate on GM cache only) ----
+  function readBLSet() {
+    const raw = GM_getValue(UID_KEY, '');
+    if (!raw) return new Set();
+    return new Set(raw.split(',').map(s => String(s).trim()).filter(Boolean));
+  }
+  function writeBLSet(set) {
+    GM_setValue(UID_KEY, Array.from(set).join(','));
+  }
+  function addToBL(uids) {
+    const set = readBLSet();
+    uids.forEach(u=>set.add(String(u).trim()));
+    writeBLSet(set);
+    return set.size;
+  }
+  function removeFromBL(uids) {
+    const set = readBLSet();
+    uids.forEach(u=>set.delete(String(u).trim()));
+    writeBLSet(set);
+    return set.size;
+  }
+  function parseUIDInput(text) {
+    return (text||'')
+      .split(/[^0-9]+/g)  // allow comma/space/newline
+      .map(s => s.trim())
+      .filter(s => /^\d{5,}$/.test(s));
+  }
+
+  // ---- DOM hider based on titles ----
+  function normText(s){return (s||'').replace(/\s+/g,'').trim();}
+  function buildBlockTitles(){
+    const t=[];
+    if (CFG.hideHotSearch) t.push('微博热搜');
+    if (CFG.hideSuggestedPeople) t.push('你可能感兴趣的人');
+    return new Set(t);
+  }
+  function findSectionRootFromHeading(h){
+    let cur=h;
+    while(cur&&cur!==document.documentElement){
+      const hasHotSearchParts = cur.querySelector('.wbpro-side-bottom, .wbpro-side-card7, [class*="cardHotSearch_tab_"]');
+      const isSidePanel = cur.matches('.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]');
+      if (hasHotSearchParts || isSidePanel) return cur;
+      cur = cur.parentElement;
+    }
+    return h.closest('.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]') || h;
+  }
+  function hidePanels(root=document){
+    const BLOCK_TITLES = buildBlockTitles();
+    const headings = root.querySelectorAll('.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex');
+    headings.forEach(h=>{
+      const text = normText(h.textContent);
+      if (!text) return;
+      for (const t of BLOCK_TITLES){
+        if (text.includes(normText(t))){
+          const panel = findSectionRootFromHeading(h);
+          if (panel && !panel.dataset.__wb_hidden_by_userscript){
+            panel.style.setProperty('display','none','important');
+            panel.dataset.__wb_hidden_by_userscript='1';
+          }
+          break;
+        }
+      }
+    });
+  }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', ()=>hidePanels());
+  else hidePanels();
+  const mo = new MutationObserver(m=>{for(const r of m){for(const n of r.addedNodes){if(n.nodeType===1) hidePanels(n);}}});
+  mo.observe(document.documentElement,{childList:true,subtree:true});
+
+  // ---- Settings UI ----
+  function ensureStyles(){
+    const css=`
+    .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;border:0;border-radius:999px;padding:10px 12px;background:#111;color:#fff;font-size:13px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.2);}
+    .wbset-panel{position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.35);}
+    .wbset-card{width:min(620px,92vw);max-height:86vh;overflow:auto;background:#fff;color:#111;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.25);}
+    .wbset-hdr{padding:14px 18px;border-bottom:1px solid #eee;font-weight:600;font-size:15px;display:flex;align-items:center;justify-content:space-between;}
+    .wbset-bdy{padding:16px 18px;display:grid;gap:14px;}
+    .wbset-sec{padding:12px 12px;border:1px solid #f0f0f0;border-radius:12px}
+    .wbset-sec h4{margin:0 0 8px 0;font-size:14px}
+    .wbset-row{display:flex;align-items:center;gap:8px;margin:6px 0}
+    .wbset-row input[type="text"], .wbset-row textarea{flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:8px}
+    .wbset-note{font-size:12px;color:#777}
+    .wbset-ftr{padding:14px 18px;border-top:1px solid #eee;display:flex;gap:10px;justify-content:flex-end}
+    .wbset-btn2{border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
+    .wbset-btn2.primary{background:#111;color:#fff}
+    .wbset-btn2.ghost{background:#f6f6f6}
+    `;
+    if (typeof GM_addStyle==='function') GM_addStyle(css);
+    else { const s=document.createElement('style'); s.textContent=css; document.head.appendChild(s); }
+  }
+
+  function openPanel(){
+    ensureStyles();
+    let panel=document.querySelector('.wbset-panel');
+    if(!panel){
+      panel=document.createElement('div');
+      panel.className='wbset-panel';
+      panel.innerHTML=`
+        <div class="wbset-card" role="dialog" aria-modal="true">
+          <div class="wbset-hdr">
+            <div>脚本设置</div>
+            <button class="wbset-btn2 ghost" id="wbset-close">关闭</button>
+          </div>
+          <div class="wbset-bdy">
+            <div class="wbset-sec">
+              <h4>版块隐藏</h4>
+              <label class="wbset-row"><input type="checkbox" id="wbset-hot"> 隐藏：微博热搜</label>
+              <label class="wbset-row"><input type="checkbox" id="wbset-sug"> 隐藏：你可能感兴趣的人</label>
+              <div class="wbset-row wbset-note">说明：仅影响侧栏版块的显示，不改动你的黑名单数据。</div>
+            </div>
+
+            <div class="wbset-sec">
+              <h4>黑名单管理</h4>
+              <div class="wbset-row">
+                <textarea id="wbset-uids" rows="2" placeholder="输入一个或多个 UID，支持逗号/空格/换行分隔"></textarea>
+              </div>
+              <div class="wbset-row">
+                <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
+                <button class="wbset-btn2" id="wbset-bl-remove">从黑名单移除</button>
+                <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
+              </div>
+              <div class="wbset-row">
+                <span class="wbset-note">当前缓存 UID 数：<b id="wbset-count">-</b></span>
+                <button class="wbset-btn2 ghost" id="wbset-refresh">刷新统计</button>
+              </div>
+              <div class="wbset-row wbset-note">
+                注：移除后立即写入本地缓存（WB_BL_list）。原脚本的内存列表会在页面刷新后与缓存同步，
+                因此“关于”里的统计建议刷新页面后再看。
+              </div>
+            </div>
+          </div>
+          <div class="wbset-ftr">
+            <button class="wbset-btn2 ghost" id="wbset-cancel">取消</button>
+            <button class="wbset-btn2 primary" id="wbset-save">保存</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(panel);
+
+      const $hot = panel.querySelector('#wbset-hot');
+      const $sug = panel.querySelector('#wbset-sug');
+      const $uids = panel.querySelector('#wbset-uids');
+      const $count = panel.querySelector('#wbset-count');
+
+      function refreshCfgUI(){
+        $hot.checked = !!CFG.hideHotSearch;
+        $sug.checked = !!CFG.hideSuggestedPeople;
+      }
+      function refreshCount(){
+        $count.textContent = String(readBLSet().size);
+      }
+
+      refreshCfgUI();
+      refreshCount();
+
+      panel.querySelector('#wbset-refresh').addEventListener('click', refreshCount);
+      panel.querySelector('#wbset-reload').addEventListener('click', ()=>location.reload());
+
+      panel.querySelector('#wbset-bl-add').addEventListener('click', ()=>{
+        const ids = parseUIDInput($uids.value);
+        if (!ids.length) return alert('请输入有效的 UID');
+        const size = addToBL(ids);
+        refreshCount();
+        alert(`已加入 ${ids.length} 个 UID，当前缓存总数：${size}`);
+      });
+      panel.querySelector('#wbset-bl-remove').addEventListener('click', ()=>{
+        const ids = parseUIDInput($uids.value);
+        if (!ids.length) return alert('请输入有效的 UID');
+        const size = removeFromBL(ids);
+        refreshCount();
+        alert(`已从黑名单移除 ${ids.length} 个 UID，当前缓存总数：${size}\n（建议点击“重载页面”使内存列表立即生效）`);
+      });
+
+      panel.querySelector('#wbset-save').addEventListener('click', ()=>{
+        CFG.hideHotSearch = $hot.checked;
+        CFG.hideSuggestedPeople = $sug.checked;
+        saveCfg(CFG);
+        panel.style.display='none';
+        hidePanels(document);
+      });
+      panel.querySelector('#wbset-cancel').addEventListener('click', ()=>{
+        CFG = loadCfg();
+        panel.style.display='none';
+      });
+      panel.querySelector('#wbset-close').addEventListener('click', ()=>{
+        CFG = loadCfg();
+        panel.style.display='none';
+      });
+      panel.addEventListener('click', (e)=>{ if(e.target===panel){ panel.style.display='none'; }});
+    }
+    panel.style.display='flex';
+  }
+
+  function initLauncher(){
+    ensureStyles();
+    const btn=document.createElement('button');
+    btn.className='wbset-btn';
+    btn.textContent='设置';
+    btn.title='脚本设置';
+    btn.addEventListener('click', openPanel);
+    document.documentElement.appendChild(btn);
+    if (typeof GM_registerMenuCommand==='function') {
+      GM_registerMenuCommand('打开脚本设置', openPanel);
+    }
+  }
+
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', initLauncher);
+  else initLauncher();
+
+})();
+/* === /Settings v4 === */
