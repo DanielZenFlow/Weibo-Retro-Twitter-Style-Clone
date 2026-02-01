@@ -2,7 +2,7 @@
 // @sandbox      raw
 // @name         Weibo Retro Twitter-Style Clone
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.0.0
+// @version      1.1.0
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -200,10 +200,27 @@
   }
 
   function useOption(key, title, defaultVal) {
-    let val = _GM_getValue(key, defaultVal);
+    // 优先从 cfg 配置读取（Settings v4 统一管理）
+    let val;
+    try {
+      const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
+      if (key === 'defaultLatest' && cfg.defaultLatestTimeline !== undefined) {
+        val = cfg.defaultLatestTimeline;
+      } else {
+        val = _GM_getValue(key, defaultVal);
+      }
+    } catch {
+      val = _GM_getValue(key, defaultVal);
+    }
     _GM_registerMenuCommand(`${title}: ${val ? '✅' : '❌'}`, () => {
       val = !val;
       _GM_setValue(key, val);
+      // 同步更新到 cfg
+      try {
+        const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
+        if (key === 'defaultLatest') cfg.defaultLatestTimeline = val;
+        _GM_setValue('cfg', JSON.stringify(cfg));
+      } catch {}
       location.reload();
     });
     return {
@@ -215,20 +232,83 @@
   const timelineDefault = useOption('defaultLatest', '默认最新微博', true);
 
   // === 强制切换到"最新微博"分栏 ===
+  // 策略：1. API层面劫持，将默认推荐流替换为时间线流
+  //       2. DOM层面同步Tab选中状态
   (function forceLatestTab() {
     if (!timelineDefault.value) return;
-    if (
-      location.hostname === 'weibo.com' &&
-      (location.pathname === '/' || location.pathname === '')
-    ) {
-      const clickBtn = () => {
+
+    const isHomePage = () => {
+      return (
+        location.hostname === 'weibo.com' &&
+        (location.pathname === '/' || location.pathname === '')
+      );
+    };
+
+    // DOM层：确保Tab UI状态正确（点击切换）
+    const syncTabUI = () => {
+      const btn = document.querySelector('[role="link"][title="最新微博"]');
+      if (btn && btn.getAttribute('aria-selected') !== 'true') {
+        btn.click();
+      }
+    };
+
+    if (isHomePage()) {
+      // 使用 MutationObserver 监听Tab出现后立即点击（比setTimeout更快）
+      const tabObserver = new MutationObserver((mutations, obs) => {
         const btn = document.querySelector('[role="link"][title="最新微博"]');
-        if (btn) btn.click();
-        else setTimeout(clickBtn, 1000);
+        if (btn) {
+          if (btn.getAttribute('aria-selected') !== 'true') {
+            btn.click();
+          }
+          obs.disconnect();
+        }
+      });
+
+      // 尽早开始监听
+      const startObserve = () => {
+        tabObserver.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+        // 5秒后自动停止，防止无限监听
+        setTimeout(() => tabObserver.disconnect(), 5000);
       };
-      if (document.readyState !== 'loading') clickBtn();
-      else window.addEventListener('DOMContentLoaded', clickBtn);
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startObserve);
+      } else {
+        startObserve();
+      }
     }
+
+    // SPA路由变化时同步Tab状态
+    let currentPath = location.pathname;
+    const handleRouteChange = () => {
+      const newPath = location.pathname;
+      if (newPath !== currentPath) {
+        const isNowHome = newPath === '/' || newPath === '';
+        currentPath = newPath;
+
+        if (isNowHome) {
+          // 延迟等待Tab渲染，然后同步UI
+          setTimeout(syncTabUI, 100);
+          setTimeout(syncTabUI, 300);
+          setTimeout(syncTabUI, 600);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handleRouteChange);
+    const origPushState = history.pushState;
+    history.pushState = function (...args) {
+      origPushState.apply(this, args);
+      handleRouteChange();
+    };
+    const origReplaceState = history.replaceState;
+    history.replaceState = function (...args) {
+      origReplaceState.apply(this, args);
+      handleRouteChange();
+    };
   })();
 
   // === 黑名单数据与同步 ===
@@ -346,8 +426,12 @@
   let BL = new Set();
   (async () => {
     const cache = _GM_getValue(UID_KEY, '');
-    BL = cache ? new Set(cache.split(',')) : await fullSync();
-    if (cache) BL = await deltaSync(BL);
+    // 首次运行时不自动采集，等待用户授权后再同步
+    if (cache) {
+      BL = new Set(cache.split(',').filter(Boolean));
+      BL = await deltaSync(BL);
+    }
+    // 无缓存时 BL 保持空 Set，由 checkFirstRun() 引导用户同步
     injectCSSWhenReady(generateCSSRules());
 
     // 检查首次运行和Star提醒
@@ -366,17 +450,31 @@
     `
       )
       .join('\n');
+
+    // 从设置中读取是否隐藏导航栏视频/推荐图标
+    let hideNavIconsCSS = '';
+    try {
+      const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
+      if (cfg.hideNavVideoRecommend) {
+        hideNavIconsCSS = `
+          /* 隐藏导航栏视频和推荐图标 */
+          nav a[title="视频"], nav a[title="推荐"],
+          nav [title="视频"], nav [title="推荐"],
+          [class*="_item_"][title="视频"], [class*="_item_"][title="推荐"],
+          a[href*="/tv"], a[href*="/hot"],
+          nav svg[title="画板"], nav svg[title="视频"],
+          [class*="Nav_"] a[href*="/tv"], [class*="Nav_"] a[href*="/hot"] {
+            display: none !important;
+          }
+        `;
+      }
+    } catch (e) {}
+
     return `
       ${blRules}
       div[role="link"][title="全部关注"] { display: none !important; }
       .Links_box_17T3k { display: none !important; }
-      .cardHotSearch_tit_2lo7I,
-      .cardHotSearch_tab_24u_o,
-      .wbpro-side-card7,
-      .wbpro-side-tit.woo-box-flex.woo-box-alignCenter,
-      .wbpro-side-card4 {
-        display: none !important;
-      }
+      ${hideNavIconsCSS}
     `;
   }
 
@@ -426,8 +524,8 @@
       out[k] = Array.isArray(v)
         ? filterData(v)
         : v && typeof v === 'object'
-        ? filterData(v)
-        : v;
+          ? filterData(v)
+          : v;
     }
     return out;
   }
@@ -472,10 +570,11 @@
     ) {
       try {
         const data = await res.clone().json();
-        return new Response(
-          JSON.stringify(filterData(data)),
-          { status: res.status, statusText: res.statusText, headers: res.headers }
-        );
+        return new Response(JSON.stringify(filterData(data)), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
       } catch {}
     }
     return res;
@@ -493,12 +592,13 @@
         if (this._url.includes('unreadfriendstimeline')) {
           Object.defineProperty(this, 'responseText', {
             configurable: true,
-            get: () => JSON.stringify({
-              ok: 1,
-              statuses: [],
-              since_id_str: '0',
-              max_id_str: '0',
-            }),
+            get: () =>
+              JSON.stringify({
+                ok: 1,
+                statuses: [],
+                since_id_str: '0',
+                max_id_str: '0',
+              }),
           });
           return;
         }
@@ -641,94 +741,157 @@
 })();
 
 /* === Settings v4 (no whitelist) + DOM toggles + BL add/remove === */
-(function(){
+(function () {
   'use strict';
   const UID_KEY = 'WB_BL_list';
 
   const DEFAULTS = {
     hideHotSearch: true,
-    hideSuggestedPeople: true
+    hideSuggestedPeople: true,
+    hideNavVideoRecommend: false,
+    defaultLatestTimeline: true,
   };
 
   function loadCfg() {
-    try { return Object.assign({}, DEFAULTS, JSON.parse(GM_getValue('cfg', '{}'))); }
-    catch { return Object.assign({}, DEFAULTS); }
+    try {
+      return Object.assign({}, DEFAULTS, JSON.parse(GM_getValue('cfg', '{}')));
+    } catch {
+      return Object.assign({}, DEFAULTS);
+    }
   }
-  function saveCfg(cfg) { GM_setValue('cfg', JSON.stringify(cfg||{})); }
+  function saveCfg(cfg) {
+    GM_setValue('cfg', JSON.stringify(cfg || {}));
+  }
   let CFG = loadCfg();
 
   // ---- BL Store helpers (operate on GM cache only) ----
   function readBLSet() {
     const raw = GM_getValue(UID_KEY, '');
     if (!raw) return new Set();
-    return new Set(raw.split(',').map(s => String(s).trim()).filter(Boolean));
+    return new Set(
+      raw
+        .split(',')
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+    );
   }
   function writeBLSet(set) {
     GM_setValue(UID_KEY, Array.from(set).join(','));
   }
   function addToBL(uids) {
     const set = readBLSet();
-    uids.forEach(u=>set.add(String(u).trim()));
+    uids.forEach((u) => set.add(String(u).trim()));
     writeBLSet(set);
     return set.size;
   }
   function removeFromBL(uids) {
     const set = readBLSet();
-    uids.forEach(u=>set.delete(String(u).trim()));
+    uids.forEach((u) => set.delete(String(u).trim()));
     writeBLSet(set);
     return set.size;
   }
   function parseUIDInput(text) {
-    return (text||'')
-      .split(/[^0-9]+/g)  // allow comma/space/newline
-      .map(s => s.trim())
-      .filter(s => /^\d{5,}$/.test(s));
+    return (text || '')
+      .split(/[^0-9]+/g) // allow comma/space/newline
+      .map((s) => s.trim())
+      .filter((s) => /^\d{5,}$/.test(s));
+  }
+
+  // 导出黑名单备份为 JSON 文件
+  function exportBlacklist() {
+    const blSet = readBLSet();
+    const uids = Array.from(blSet);
+    const exportData = {
+      exportTime: new Date().toISOString(),
+      version: '1.0.4',
+      scriptName: 'Weibo Retro Twitter-Style Clone',
+      count: uids.length,
+      uids: uids,
+    };
+    const jsonStr = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `weibo-blacklist-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return uids.length;
   }
 
   // ---- DOM hider based on titles ----
-  function normText(s){return (s||'').replace(/\s+/g,'').trim();}
-  function buildBlockTitles(){
-    const t=[];
+  function normText(s) {
+    return (s || '').replace(/\s+/g, '').trim();
+  }
+  function buildBlockTitles() {
+    const t = [];
     if (CFG.hideHotSearch) t.push('微博热搜');
     if (CFG.hideSuggestedPeople) t.push('你可能感兴趣的人');
     return new Set(t);
   }
-  function findSectionRootFromHeading(h){
-    let cur=h;
-    while(cur&&cur!==document.documentElement){
-      const hasHotSearchParts = cur.querySelector('.wbpro-side-bottom, .wbpro-side-card7, [class*="cardHotSearch_tab_"]');
-      const isSidePanel = cur.matches('.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]');
+  function findSectionRootFromHeading(h) {
+    let cur = h;
+    while (cur && cur !== document.documentElement) {
+      const hasHotSearchParts = cur.querySelector(
+        '.wbpro-side-bottom, .wbpro-side-card7, [class*="cardHotSearch_tab_"]'
+      );
+      const isSidePanel = cur.matches(
+        '.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]'
+      );
       if (hasHotSearchParts || isSidePanel) return cur;
       cur = cur.parentElement;
     }
-    return h.closest('.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]') || h;
+    return (
+      h.closest('.wbpro-side, .wbpro-side-panel, [class*="Card_wrap_"]') || h
+    );
   }
-  function hidePanels(root=document){
+
+  // 恢复所有被脚本隐藏的面板
+  function showAllHiddenPanels() {
+    document
+      .querySelectorAll('[data-__wb_hidden_by_userscript]')
+      .forEach((panel) => {
+        panel.style.removeProperty('display');
+        panel.removeAttribute('data-__wb_hidden_by_userscript');
+      });
+  }
+  function hidePanels(root = document) {
     const BLOCK_TITLES = buildBlockTitles();
-    const headings = root.querySelectorAll('.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex');
-    headings.forEach(h=>{
+    const headings = root.querySelectorAll(
+      '.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex'
+    );
+    headings.forEach((h) => {
       const text = normText(h.textContent);
       if (!text) return;
-      for (const t of BLOCK_TITLES){
-        if (text.includes(normText(t))){
+      for (const t of BLOCK_TITLES) {
+        if (text.includes(normText(t))) {
           const panel = findSectionRootFromHeading(h);
-          if (panel && !panel.dataset.__wb_hidden_by_userscript){
-            panel.style.setProperty('display','none','important');
-            panel.dataset.__wb_hidden_by_userscript='1';
+          if (panel && !panel.hasAttribute('data-__wb_hidden_by_userscript')) {
+            panel.style.setProperty('display', 'none', 'important');
+            panel.setAttribute('data-__wb_hidden_by_userscript', '1');
           }
           break;
         }
       }
     });
   }
-  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', ()=>hidePanels());
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', () => hidePanels());
   else hidePanels();
-  const mo = new MutationObserver(m=>{for(const r of m){for(const n of r.addedNodes){if(n.nodeType===1) hidePanels(n);}}});
-  mo.observe(document.documentElement,{childList:true,subtree:true});
+  const mo = new MutationObserver((m) => {
+    for (const r of m) {
+      for (const n of r.addedNodes) {
+        if (n.nodeType === 1) hidePanels(n);
+      }
+    }
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
 
   // ---- Settings UI ----
-  function ensureStyles(){
-    const css=`
+  function ensureStyles() {
+    const css = `
     .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;border:0;border-radius:999px;padding:10px 12px;background:#111;color:#fff;font-size:13px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.2);}
     .wbset-panel{position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.35);}
     .wbset-card{width:min(620px,92vw);max-height:86vh;overflow:auto;background:#fff;color:#111;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.25);}
@@ -744,17 +907,21 @@
     .wbset-btn2.primary{background:#111;color:#fff}
     .wbset-btn2.ghost{background:#f6f6f6}
     `;
-    if (typeof GM_addStyle==='function') GM_addStyle(css);
-    else { const s=document.createElement('style'); s.textContent=css; document.head.appendChild(s); }
+    if (typeof GM_addStyle === 'function') GM_addStyle(css);
+    else {
+      const s = document.createElement('style');
+      s.textContent = css;
+      document.head.appendChild(s);
+    }
   }
 
-  function openPanel(){
+  function openPanel() {
     ensureStyles();
-    let panel=document.querySelector('.wbset-panel');
-    if(!panel){
-      panel=document.createElement('div');
-      panel.className='wbset-panel';
-      panel.innerHTML=`
+    let panel = document.querySelector('.wbset-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.className = 'wbset-panel';
+      panel.innerHTML = `
         <div class="wbset-card" role="dialog" aria-modal="true">
           <div class="wbset-hdr">
             <div>脚本设置</div>
@@ -762,7 +929,19 @@
           </div>
           <div class="wbset-bdy">
             <div class="wbset-sec">
-              <h4>版块隐藏</h4>
+              <h4>时间线设置</h4>
+              <label class="wbset-row"><input type="checkbox" id="wbset-latest"> 主页默认显示「最新微博」（按时间顺序）</label>
+              <div class="wbset-row wbset-note">说明：勾选后每次打开首页自动切换到「最新微博」分栏。</div>
+            </div>
+
+            <div class="wbset-sec">
+              <h4>导航栏设置</h4>
+              <label class="wbset-row"><input type="checkbox" id="wbset-nav"> 隐藏导航栏「视频」「推荐」图标</label>
+              <div class="wbset-row wbset-note">说明：隐藏顶部导航栏中的视频和推荐入口图标。</div>
+            </div>
+
+            <div class="wbset-sec">
+              <h4>侧栏版块隐藏</h4>
               <label class="wbset-row"><input type="checkbox" id="wbset-hot"> 隐藏：微博热搜</label>
               <label class="wbset-row"><input type="checkbox" id="wbset-sug"> 隐藏：你可能感兴趣的人</label>
               <div class="wbset-row wbset-note">说明：仅影响侧栏版块的显示，不改动你的黑名单数据。</div>
@@ -781,6 +960,7 @@
               <div class="wbset-row">
                 <span class="wbset-note">当前缓存 UID 数：<b id="wbset-count">-</b></span>
                 <button class="wbset-btn2 ghost" id="wbset-refresh">刷新统计</button>
+                <button class="wbset-btn2 ghost" id="wbset-export">📥 导出备份</button>
               </div>
               <div class="wbset-row wbset-note">
                 注：移除后立即写入本地缓存（WB_BL_list）。原脚本的内存列表会在页面刷新后与缓存同步，
@@ -798,73 +978,95 @@
 
       const $hot = panel.querySelector('#wbset-hot');
       const $sug = panel.querySelector('#wbset-sug');
+      const $latest = panel.querySelector('#wbset-latest');
+      const $nav = panel.querySelector('#wbset-nav');
       const $uids = panel.querySelector('#wbset-uids');
       const $count = panel.querySelector('#wbset-count');
 
-      function refreshCfgUI(){
+      function refreshCfgUI() {
         $hot.checked = !!CFG.hideHotSearch;
         $sug.checked = !!CFG.hideSuggestedPeople;
+        $latest.checked = CFG.defaultLatestTimeline !== false; // 默认true
+        $nav.checked = !!CFG.hideNavVideoRecommend;
       }
-      function refreshCount(){
+      function refreshCount() {
         $count.textContent = String(readBLSet().size);
       }
 
       refreshCfgUI();
       refreshCount();
 
-      panel.querySelector('#wbset-refresh').addEventListener('click', refreshCount);
-      panel.querySelector('#wbset-reload').addEventListener('click', ()=>location.reload());
+      panel
+        .querySelector('#wbset-refresh')
+        .addEventListener('click', refreshCount);
+      panel
+        .querySelector('#wbset-reload')
+        .addEventListener('click', () => location.reload());
+      panel.querySelector('#wbset-export').addEventListener('click', () => {
+        const count = exportBlacklist();
+        alert(`✅ 已导出 ${count} 个 UID 到 JSON 文件`);
+      });
 
-      panel.querySelector('#wbset-bl-add').addEventListener('click', ()=>{
+      panel.querySelector('#wbset-bl-add').addEventListener('click', () => {
         const ids = parseUIDInput($uids.value);
         if (!ids.length) return alert('请输入有效的 UID');
         const size = addToBL(ids);
         refreshCount();
         alert(`已加入 ${ids.length} 个 UID，当前缓存总数：${size}`);
       });
-      panel.querySelector('#wbset-bl-remove').addEventListener('click', ()=>{
+      panel.querySelector('#wbset-bl-remove').addEventListener('click', () => {
         const ids = parseUIDInput($uids.value);
         if (!ids.length) return alert('请输入有效的 UID');
         const size = removeFromBL(ids);
         refreshCount();
-        alert(`已从黑名单移除 ${ids.length} 个 UID，当前缓存总数：${size}\n（建议点击“重载页面”使内存列表立即生效）`);
+        alert(
+          `已从黑名单移除 ${ids.length} 个 UID，当前缓存总数：${size}\n（建议点击“重载页面”使内存列表立即生效）`
+        );
       });
 
-      panel.querySelector('#wbset-save').addEventListener('click', ()=>{
+      panel.querySelector('#wbset-save').addEventListener('click', () => {
         CFG.hideHotSearch = $hot.checked;
         CFG.hideSuggestedPeople = $sug.checked;
+        CFG.defaultLatestTimeline = $latest.checked;
+        CFG.hideNavVideoRecommend = $nav.checked;
         saveCfg(CFG);
-        panel.style.display='none';
-        hidePanels(document);
+        // 同步更新 defaultLatest 到油猴菜单使用的存储
+        GM_setValue('defaultLatest', $latest.checked);
+        // 刷新页面以确保布局正确更新
+        location.reload();
       });
-      panel.querySelector('#wbset-cancel').addEventListener('click', ()=>{
+      panel.querySelector('#wbset-cancel').addEventListener('click', () => {
         CFG = loadCfg();
-        panel.style.display='none';
+        panel.style.display = 'none';
       });
-      panel.querySelector('#wbset-close').addEventListener('click', ()=>{
+      panel.querySelector('#wbset-close').addEventListener('click', () => {
         CFG = loadCfg();
-        panel.style.display='none';
+        panel.style.display = 'none';
       });
-      panel.addEventListener('click', (e)=>{ if(e.target===panel){ panel.style.display='none'; }});
+      panel.addEventListener('click', (e) => {
+        if (e.target === panel) {
+          panel.style.display = 'none';
+        }
+      });
     }
-    panel.style.display='flex';
+    panel.style.display = 'flex';
   }
 
-  function initLauncher(){
+  function initLauncher() {
     ensureStyles();
-    const btn=document.createElement('button');
-    btn.className='wbset-btn';
-    btn.textContent='设置';
-    btn.title='脚本设置';
+    const btn = document.createElement('button');
+    btn.className = 'wbset-btn';
+    btn.textContent = '设置';
+    btn.title = '脚本设置';
     btn.addEventListener('click', openPanel);
     document.documentElement.appendChild(btn);
-    if (typeof GM_registerMenuCommand==='function') {
+    if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('打开脚本设置', openPanel);
     }
   }
 
-  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', initLauncher);
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', initLauncher);
   else initLauncher();
-
 })();
 /* === /Settings v4 === */
