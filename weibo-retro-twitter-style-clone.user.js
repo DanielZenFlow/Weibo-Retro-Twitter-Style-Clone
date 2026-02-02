@@ -1,8 +1,8 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @sandbox      raw
-// @name         Weibo Retro Twitter-Style Clone
+// @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.1.0
+// @version      1.1.2
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -199,37 +199,20 @@
     }
   }
 
-  function useOption(key, title, defaultVal) {
-    // 优先从 cfg 配置读取（Settings v4 统一管理）
-    let val;
+  // 读取时间线默认设置（不再创建油猴菜单，统一在设置面板管理）
+  function getTimelineDefault() {
     try {
       const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
-      if (key === 'defaultLatest' && cfg.defaultLatestTimeline !== undefined) {
-        val = cfg.defaultLatestTimeline;
-      } else {
-        val = _GM_getValue(key, defaultVal);
-      }
+      return cfg.defaultLatestTimeline !== false; // 默认 true
     } catch {
-      val = _GM_getValue(key, defaultVal);
+      return true;
     }
-    _GM_registerMenuCommand(`${title}: ${val ? '✅' : '❌'}`, () => {
-      val = !val;
-      _GM_setValue(key, val);
-      // 同步更新到 cfg
-      try {
-        const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
-        if (key === 'defaultLatest') cfg.defaultLatestTimeline = val;
-        _GM_setValue('cfg', JSON.stringify(cfg));
-      } catch {}
-      location.reload();
-    });
-    return {
-      get value() {
-        return val;
-      },
-    };
   }
-  const timelineDefault = useOption('defaultLatest', '默认最新微博', true);
+  const timelineDefault = {
+    get value() {
+      return getTimelineDefault();
+    },
+  };
 
   // === 强制切换到"最新微博"分栏 ===
   // 策略：1. API层面劫持，将默认推荐流替换为时间线流
@@ -424,6 +407,16 @@
   }
 
   let BL = new Set();
+  
+  // 将同步函数暴露到全局，供 Settings 模块使用
+  window.WB_BL_SYNC = {
+    fullSync: fullSync,
+    deltaSync: () => deltaSync(BL),
+    syncPages: (pages) => syncPages(BL, pages),
+    getBL: () => BL,
+    setBL: (newBL) => { BL = newBL; }
+  };
+  
   (async () => {
     const cache = _GM_getValue(UID_KEY, '');
     // 首次运行时不自动采集，等待用户授权后再同步
@@ -674,45 +667,14 @@
     attach();
   })();
 
-  /* === Tampermonkey 菜单 === */
+  /* === Tampermonkey 菜单（精简版） === */
 
-  // 更新（第一页增量）
-  _GM_registerMenuCommand('🔄 更新黑名单', async () => {
-    const oldSize = BL.size;
-    BL = await deltaSync(new Set(BL));
-    _GM_setValue(UID_KEY, [...BL].join(','));
-    alert(`黑名单更新完成！新增 ${BL.size - oldSize} 个用户`);
-  });
-
-  // 五页同步
-  _GM_registerMenuCommand('📄 同步前五页黑名单', async () => {
-    const added = await syncPages(BL, 5);
-    alert(`同步五页完成！新增 ${added} 个用户`);
-  });
-
-  // 全量同步
-  _GM_registerMenuCommand('🔄 全量同步黑名单', async () => {
-    const oldSize = BL.size;
-    BL = await fullSync();
-    alert(`全量同步完成！新增 ${BL.size - oldSize} 个用户（共 ${BL.size}）`);
-  });
-
-  // Star相关菜单
+  // Star
   _GM_registerMenuCommand('⭐ 给我们 Star', () => {
     openGitHub();
   });
 
-  _GM_registerMenuCommand('🔕 不再提醒Star', () => {
-    const shouldDisable = confirm(
-      '确认要关闭 Star 提醒吗？\n\n' + '这将永久停止所有 Star 相关提醒'
-    );
-
-    if (shouldDisable) {
-      _GM_setValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, true);
-      alert('✅ Star 提醒已关闭');
-    }
-  });
-
+  // 关于
   _GM_registerMenuCommand('ℹ️ 关于', () => {
     const isDisabled = _GM_getValue(
       STAR_CONFIG.STAR_REMINDER_DISABLED_KEY,
@@ -821,6 +783,115 @@
     return uids.length;
   }
 
+  // 导入黑名单备份从 JSON 文件
+  function importBlacklist(file, mode = 'merge') {
+    return new Promise((resolve, reject) => {
+      if (!file) {
+        reject(new Error('未选择文件'));
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const content = e.target.result;
+          let importData;
+
+          try {
+            importData = JSON.parse(content);
+          } catch (parseErr) {
+            reject(new Error('文件格式错误：无法解析 JSON'));
+            return;
+          }
+
+          // 验证数据格式
+          let uidsToImport = [];
+
+          if (importData.uids && Array.isArray(importData.uids)) {
+            // 标准格式：{ uids: [...] }
+            uidsToImport = importData.uids
+              .map((u) => String(u).trim())
+              .filter((u) => /^\d{5,}$/.test(u));
+          } else if (Array.isArray(importData)) {
+            // 简单数组格式：[...]
+            uidsToImport = importData
+              .map((u) => String(u).trim())
+              .filter((u) => /^\d{5,}$/.test(u));
+          } else if (typeof content === 'string') {
+            // 纯文本格式：逗号/换行分隔
+            uidsToImport = content
+              .split(/[,\s\n]+/)
+              .map((u) => u.trim())
+              .filter((u) => /^\d{5,}$/.test(u));
+          }
+
+          if (uidsToImport.length === 0) {
+            reject(new Error('未在文件中找到有效的 UID'));
+            return;
+          }
+
+          const currentSet = readBLSet();
+          const oldSize = currentSet.size;
+          let newSize,
+            addedCount,
+            removedCount = 0;
+
+          if (mode === 'replace') {
+            // 替换模式：清空后导入
+            const newSet = new Set(uidsToImport);
+            writeBLSet(newSet);
+            newSize = newSet.size;
+            addedCount = uidsToImport.filter((u) => !currentSet.has(u)).length;
+            removedCount = oldSize;
+          } else {
+            // 合并模式（默认）：保留现有 + 添加新的
+            uidsToImport.forEach((u) => currentSet.add(u));
+            writeBLSet(currentSet);
+            newSize = currentSet.size;
+            addedCount = newSize - oldSize;
+          }
+
+          resolve({
+            success: true,
+            importedCount: uidsToImport.length,
+            addedCount,
+            removedCount,
+            totalCount: newSize,
+            mode,
+            exportTime: importData.exportTime || '未知',
+            exportVersion: importData.version || '未知',
+          });
+        } catch (err) {
+          reject(new Error('导入失败：' + err.message));
+        }
+      };
+
+      reader.onerror = () => {
+        reject(new Error('文件读取失败'));
+      };
+
+      reader.readAsText(file);
+    });
+  }
+
+  // 创建隐藏的文件输入元素
+  function createFileInput(onFileSelected) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.txt';
+    input.style.display = 'none';
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        onFileSelected(file);
+      }
+      // 清空以便重复选择同一文件
+      input.value = '';
+    });
+    document.body.appendChild(input);
+    return input;
+  }
+
   // ---- DOM hider based on titles ----
   function normText(s) {
     return (s || '').replace(/\s+/g, '').trim();
@@ -906,6 +977,9 @@
     .wbset-btn2{border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
     .wbset-btn2.primary{background:#111;color:#fff}
     .wbset-btn2.ghost{background:#f6f6f6}
+    .wbset-btn2.danger{background:#e74c3c;color:#fff}
+    .wbset-btn2.danger:hover{background:#c0392b}
+    .danger-zone{border:1px solid #e74c3c;border-radius:12px;padding:12px;margin-top:12px;background:#fdf2f2}
     `;
     if (typeof GM_addStyle === 'function') GM_addStyle(css);
     else {
@@ -946,26 +1020,92 @@
               <label class="wbset-row"><input type="checkbox" id="wbset-sug"> 隐藏：你可能感兴趣的人</label>
               <div class="wbset-row wbset-note">说明：仅影响侧栏版块的显示，不改动你的黑名单数据。</div>
             </div>
+            <div class="wbset-sec">
+
+              <h4>🛠️ 手动管理</h4>
+
+              <div class="wbset-row">
+
+                <textarea id="wbset-uids" rows="2" placeholder="输入一个或多个 UID，支持逗号/空格/换行分隔"></textarea>
+
+              </div>
+
+              <div class="wbset-row">
+
+                <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
+
+                <button class="wbset-btn2" id="wbset-bl-remove">从黑名单移除</button>
+
+                <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
+
+              </div>
+
+              <div class="wbset-row">
+
+                <span class="wbset-note">当前缓存 UID 数：<b id="wbset-count">-</b></span>
+
+                <button class="wbset-btn2 ghost" id="wbset-refresh">刷新统计</button>
+
+              </div>
+
+              <div class="wbset-row wbset-note">添加/移除后立即写入本地缓存。</div>
+
+            </div>
+
+
 
             <div class="wbset-sec">
-              <h4>黑名单管理</h4>
+
+              <h4>🔄 黑名单同步</h4>
+
               <div class="wbset-row">
-                <textarea id="wbset-uids" rows="2" placeholder="输入一个或多个 UID，支持逗号/空格/换行分隔"></textarea>
+
+                <button class="wbset-btn2" id="wbset-sync-delta">⚡ 增量同步</button>
+
+                <button class="wbset-btn2 ghost" id="wbset-sync-five">🔄 同步前5页</button>
+
+                <button class="wbset-btn2 ghost" id="wbset-sync-full">📡 完整同步</button>
+
               </div>
+
+              <div class="wbset-row wbset-note">增量：仅第1页；前5页：扫描前5页增量更新；完整：遍历全部分页。</div>
+
+            </div>
+
+
+
+            <div class="wbset-sec">
+
+              <h4>💾 备份与恢复</h4>
+
               <div class="wbset-row">
-                <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
-                <button class="wbset-btn2" id="wbset-bl-remove">从黑名单移除</button>
-                <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
+
+                <button class="wbset-btn2" id="wbset-export">📤 导出黑名单</button>
+
+                <button class="wbset-btn2" id="wbset-import-merge">📥 导入（合并）</button>
+
+                <button class="wbset-btn2 ghost" id="wbset-import-replace">🔄 导入（替换）</button>
+
               </div>
+
+              <div class="wbset-row wbset-note">导出为 JSON 文件；合并保留现有数据；替换完全覆盖。</div>
+
+            </div>
+
+
+
+            <div class="wbset-sec danger-zone">
+
+              <h4>⚠️ 危险操作</h4>
+
               <div class="wbset-row">
-                <span class="wbset-note">当前缓存 UID 数：<b id="wbset-count">-</b></span>
-                <button class="wbset-btn2 ghost" id="wbset-refresh">刷新统计</button>
-                <button class="wbset-btn2 ghost" id="wbset-export">📥 导出备份</button>
+
+                <button class="wbset-btn2 danger" id="wbset-clear-all">🗑️ 清空本地黑名单</button>
+
               </div>
-              <div class="wbset-row wbset-note">
-                注：移除后立即写入本地缓存（WB_BL_list）。原脚本的内存列表会在页面刷新后与缓存同步，
-                因此“关于”里的统计建议刷新页面后再看。
-              </div>
+
+              <div class="wbset-row wbset-note" style="color:#c0392b;">此操作不可恢复，请先导出备份！</div>
+
             </div>
           </div>
           <div class="wbset-ftr">
@@ -1005,6 +1145,106 @@
       panel.querySelector('#wbset-export').addEventListener('click', () => {
         const count = exportBlacklist();
         alert(`✅ 已导出 ${count} 个 UID 到 JSON 文件`);
+      });
+
+      // 导入（合并）按钮事件
+      const fileInputMerge = createFileInput(async (file) => {
+        try {
+          const result = await importBlacklist(file, 'merge');
+          refreshCount();
+          alert(
+            `✅ 导入成功！\n` +
+              `📂 文件导出时间：${result.exportTime}\n` +
+              `📊 文件中 UID 数：${result.importedCount}\n` +
+              `➕ 新增 UID 数：${result.addedCount}\n` +
+              `📋 当前总数：${result.totalCount}\n\n` +
+              `建议点击"重载页面"使更改生效`
+          );
+        } catch (err) {
+          alert(`❌ ${err.message}`);
+        }
+      });
+      panel
+        .querySelector('#wbset-import-merge')
+        .addEventListener('click', () => {
+          fileInputMerge.click();
+        });
+
+      // 导入（替换）按钮事件
+      const fileInputReplace = createFileInput(async (file) => {
+        const confirmReplace = confirm(
+          '⚠️ 警告：替换模式将清空现有黑名单！\n\n' +
+            '确定要用文件内容完全替换当前黑名单吗？\n' +
+            '（建议先导出备份）'
+        );
+        if (!confirmReplace) return;
+
+        try {
+          const result = await importBlacklist(file, 'replace');
+          refreshCount();
+          alert(
+            `✅ 替换成功！\n` +
+              `📂 文件导出时间：${result.exportTime}\n` +
+              `📊 导入 UID 数：${result.importedCount}\n` +
+              `📋 当前总数：${result.totalCount}\n\n` +
+              `建议点击"重载页面"使更改生效`
+          );
+        } catch (err) {
+          alert(`❌ ${err.message}`);
+        }
+      });
+      panel
+        .querySelector('#wbset-import-replace')
+        .addEventListener('click', () => {
+          fileInputReplace.click();
+        });
+
+      // 同步按钮事件
+      panel.querySelector('#wbset-sync-delta').addEventListener('click', async () => {
+        const oldSize = window.WB_BL_SYNC.getBL().size;
+        await window.WB_BL_SYNC.deltaSync();
+        const newSize = window.WB_BL_SYNC.getBL().size;
+        alert(`✅ 增量同步完成！新增 ${newSize - oldSize} 个 UID`);
+        refreshCount();
+      });
+
+      panel.querySelector('#wbset-sync-five').addEventListener('click', async () => {
+        const added = await window.WB_BL_SYNC.syncPages(5);
+        alert(`✅ 同步前5页完成！新增 ${added} 个 UID`);
+        refreshCount();
+      });
+
+      panel.querySelector('#wbset-sync-full').addEventListener('click', async () => {
+        const oldSize = window.WB_BL_SYNC.getBL().size;
+        const newBL = await window.WB_BL_SYNC.fullSync();
+        window.WB_BL_SYNC.setBL(newBL);
+        const newSize = window.WB_BL_SYNC.getBL().size;
+        alert(`✅ 完整同步完成！新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`);
+        refreshCount();
+      });
+
+      panel.querySelector('#wbset-clear-all').addEventListener('click', () => {
+        const currentCount = readBLSet().size;
+        if (currentCount === 0) {
+          alert('黑名单已经是空的');
+          return;
+        }
+        const confirmClear = confirm(
+          `⚠️ 警告：此操作不可恢复！\n\n` +
+            `确定要清空所有 ${currentCount} 个黑名单 UID 吗？\n` +
+            `（强烈建议先点击"导出黑名单"备份）`
+        );
+        if (!confirmClear) return;
+
+        const doubleConfirm = confirm(
+          `🔴 最后确认：真的要清空吗？\n\n` +
+            `这将删除 ${currentCount} 个 UID，无法恢复！`
+        );
+        if (!doubleConfirm) return;
+
+        writeBLSet(new Set());
+        refreshCount();
+        alert(`✅ 已清空黑名单\n建议点击"重载页面"使更改生效`);
       });
 
       panel.querySelector('#wbset-bl-add').addEventListener('click', () => {
