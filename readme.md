@@ -15,7 +15,7 @@ _Weibo Retro Twitter-Style Clone_ restores a chronological, advertisement-free t
 | Category                  | Details                                                                                                                                                                                                                                |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ad and Promotion Removal  | Hides the **“All Followings”** ad stream, hot-search cards, game/monetisation entries, sidebar recommendations and related widgets.                                                                                                    |
-| Blacklist Synchronisation | • First run: one-time full fetch (~600 pages) with 250 ms throttling and auto-retry on HTTP 418.<br>• Subsequent launches: homepage delta fetch (~2.5 KB).<br>• Three menu commands: _Update_ (delta), _Sync Five Pages_, _Full Sync_. |
+| Blacklist Synchronisation | • First run: one-time full fetch (~600 pages) with 300 ms throttling and auto-retry on HTTP 418.<br>• Subsequent launches: homepage delta fetch (~2.5 KB).<br>• Three menu commands: _Update_ (delta), _Sync Five Pages_, _Full Sync_. |
 | Timeline Optimisation     | Forces “Latest” tab; filters Fetch/XHR/WebSocket traffic; MutationObserver debounced to minimise overhead.                                                                                                                             |
 | Reliability               | UID list persisted to Tampermonkey storage; automatic re-attachment on SPA navigation; configurable throttle and retry limits.                                                                                                         |
 
@@ -44,7 +44,7 @@ _Weibo Retro Twitter-Style Clone_ restores a chronological, advertisement-free t
 
 | Variable      | Default | Purpose                                                          |
 | ------------- | ------- | ---------------------------------------------------------------- |
-| `THROTTLE_MS` | `250`   | Minimum delay (ms) between successive API calls during full sync |
+| `THROTTLE_MS` | `300`   | Minimum delay (ms) between successive API calls during full sync |
 | `MAX_418`     | `3`     | Abort threshold after consecutive HTTP 418 responses             |
 
 ---
@@ -52,10 +52,10 @@ _Weibo Retro Twitter-Style Clone_ restores a chronological, advertisement-free t
 ## FAQ
 
 <details>
-<summary>Why is the throttling interval set to 250&nbsp;ms?</summary>
+<summary>Why is the throttling interval set to 300&nbsp;ms?</summary>
 
 Testing shows that 20–30 rapid consecutive requests often trigger Weibo’s WAF, returning HTTP 418.  
-A 250 ms delay all but eliminates these blocks. Increase the value if you continue to receive 418s.
+A 300 ms delay all but eliminates these blocks. Increase the value if you continue to receive 418s.
 
 </details>
 
