@@ -1,77 +1,78 @@
 # Weibo Retro Twitter-Style Clone
 
-Tampermonkey userscript `weibo-retro-twitter-style-clone.user.js`
+Tampermonkey userscript: `weibo-retro-twitter-style-clone.user.js`
 
 ---
 
 ## Project Summary
 
-_Weibo Retro Twitter-Style Clone_ restores a chronological, advertisement-free timeline for the Weibo desktop site while synchronising with your official blacklist. The script hides promotional modules, removes every trace of blocked users (original posts, reposts, comments, avatars, nicknames) and forces the “Latest Tweets” view—replicating the experience of early Twitter.
+_Weibo Retro Twitter-Style Clone_ restores a cleaner chronological Weibo desktop experience. It can force the home timeline to the "Latest" tab, filter blocked users from feeds and search results, hide promotional navigation entries, remove hot-search modules, and manage the local blacklist cache from an in-page settings panel.
 
 ---
 
 ## Key Features
 
-| Category                  | Details                                                                                                                                                                                                                                |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ad and Promotion Removal  | Hides the **“All Followings”** ad stream, hot-search cards, game/monetisation entries, sidebar recommendations and related widgets.                                                                                                    |
-| Blacklist Synchronisation | • First run: one-time full fetch (~600 pages) with 300 ms throttling and auto-retry on HTTP 418.<br>• Subsequent launches: homepage delta fetch (~2.5 KB).<br>• Three menu commands: _Update_ (delta), _Sync Five Pages_, _Full Sync_. |
-| Timeline Optimisation     | Forces “Latest” tab; filters Fetch/XHR/WebSocket traffic; MutationObserver debounced to minimise overhead.                                                                                                                             |
-| Reliability               | UID list persisted to Tampermonkey storage; automatic re-attachment on SPA navigation; configurable throttle and retry limits.                                                                                                         |
+| Category | Details |
+| --- | --- |
+| Timeline Control | Automatically switches the Weibo home page to the "Latest Weibo" timeline when enabled. |
+| Blacklist Filtering | Filters blocked users across Fetch, XHR, WebSocket payloads, and DOM-rendered posts. Search-result pages on `s.weibo.com` are also scanned for UID links and user-card metadata. |
+| Search Page Cleanup | Supports `s.weibo.com` search pages and removes the search hot-search container, including `#hot-band-container`, `.hot-band-container`, and `.hot-band-tabs`. |
+| Navigation Cleanup | Provides separate settings for hiding the "Video", "Recommended", and "Game" navigation entries. |
+| Sidebar Cleanup | Hides hot-search cards and suggested-people modules when enabled. |
+| Blacklist Management | Includes manual UID add/remove, import/export, delta sync, first-five-pages sync, and full sync. |
+| Reliability | Keeps the blacklist in Tampermonkey storage, re-applies DOM filters through MutationObserver, and avoids blacklist sync calls on `s.weibo.com` where the settings API is unavailable. |
 
 ---
 
 ## Installation
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** in your browser.
-2. Open the raw file [`weibo-retro-twitter-style-clone.user.js`](./dist/weibo-retro-twitter-style-clone.user.js) and allow Tampermonkey to install it, or copy the contents into a new script manually.
-3. Refresh any open Weibo tabs.  
-   _If no local UID cache is found, the script performs a full sync automatically._
+2. Open `weibo-retro-twitter-style-clone.user.js` and install it in Tampermonkey, or copy the file contents into a new Tampermonkey script.
+3. Refresh open Weibo tabs.
+4. Open the script settings panel and sync your blacklist from a `weibo.com` page.
+
+The script runs on:
+
+- `https://weibo.com/*`
+- `https://www.weibo.com/*`
+- `https://weibo.com/set/*`
+- `http://s.weibo.com/*`
+- `https://s.weibo.com/*`
 
 ---
 
 ## Usage
 
-### Tampermonkey Menu Commands
+### Settings Panel
 
-| Command                   | Action                            | Use Case                                    |
-| ------------------------- | --------------------------------- | ------------------------------------------- |
-| **Update Blacklist**      | Single-page delta sync            | Daily routine                               |
-| **Sync First Five Pages** | Fetches five pages before caching | When frequent blocking activity is expected |
-| **Full Blacklist Sync**   | Exhaustive rescan                 | New account or major list changes           |
+Click the floating **Settings** button or use the Tampermonkey menu command.
 
-### Adjustable Constants
+Available settings include:
 
-| Variable      | Default | Purpose                                                          |
-| ------------- | ------- | ---------------------------------------------------------------- |
-| `THROTTLE_MS` | `300`   | Minimum delay (ms) between successive API calls during full sync |
-| `MAX_418`     | `3`     | Abort threshold after consecutive HTTP 418 responses             |
+- Default the home page to "Latest Weibo".
+- Hide the navigation entries for "Video", "Recommended", and "Game" independently.
+- Hide hot-search and suggested-people sidebar modules.
+- Add or remove blacklist UIDs manually.
+- Export or import blacklist backups.
+- Run delta, first-five-pages, or full blacklist sync.
 
----
+### Search Pages
 
-## FAQ
+On `s.weibo.com`, the script uses the locally cached blacklist to filter matching search-result cards. Blacklist sync should be run from the main `weibo.com` domain because the settings API is not available on the search host.
 
-<details>
-<summary>Why is the throttling interval set to 300&nbsp;ms?</summary>
+The search hot-search module is removed by targeting the current search-page structures:
 
-Testing shows that 20–30 rapid consecutive requests often trigger Weibo’s WAF, returning HTTP 418.  
-A 300 ms delay all but eliminates these blocks. Increase the value if you continue to receive 418s.
-
-</details>
-
-<details>
-<summary>Does the script block every advertisement?</summary>
-
-It targets all ad and promotion elements present on the desktop site as of 11 June 2025. Structural changes by Weibo may require script updates.
-
-</details>
+- `#hot-band-container`
+- `.hot-band-container`
+- `.hot-band-tabs`
 
 ---
 
-## Contributing
+## Notes
 
-Pull requests and issue reports are welcome.  
-Please ensure code passes ESLint/Prettier checks and include concise test notes.
+- Weibo changes its DOM structure frequently. If a module reappears, inspect the remaining container and add the stable outer selector.
+- Very large blacklists may increase CSS and DOM scanning work. The script keeps the filters scoped to known Weibo post and search-result containers where possible.
+- Some settings require a page reload to fully refresh injected CSS and layout.
 
 ---
 
