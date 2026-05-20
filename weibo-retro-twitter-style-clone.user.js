@@ -2,7 +2,7 @@
 // @sandbox      raw
 // @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.1.2
+// @version      1.1.3
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -11,6 +11,8 @@
 // @match        https://weibo.com/*
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
+// @match        http://s.weibo.com/*
+// @match        https://s.weibo.com/*
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_setValue
@@ -28,6 +30,8 @@
 
 (function () {
   'use strict';
+
+  const SCRIPT_VERSION = '1.1.3';
 
   // === GM_* 接口封装 ===
   const _GM_getValue =
@@ -89,6 +93,8 @@
 
   // === Star提醒检查（时间间隔策略） ===
   function checkStarReminder() {
+    if (!canUseSettingApi()) return;
+
     const isDisabled = _GM_getValue(
       STAR_CONFIG.STAR_REMINDER_DISABLED_KEY,
       false
@@ -165,6 +171,8 @@
 
   // === 首次运行检查 ===
   function checkFirstRun() {
+    if (!canUseSettingApi()) return;
+
     const isFirstRun = !_GM_getValue(STAR_CONFIG.FIRST_RUN_KEY, false);
 
     if (isFirstRun) {
@@ -298,7 +306,10 @@
   const UID_KEY = 'WB_BL_list'; // 本地存 UID
   const THROTTLE_MS = 300; // 节流（毫秒）
   const MAX_418 = 3; // 连续 418 次数上限
+  const MAIN_WEIBO_HOSTS = new Set(['weibo.com', 'www.weibo.com']);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const canUseSettingApi = () => MAIN_WEIBO_HOSTS.has(location.hostname);
+  const SETTING_API_HOST_ERROR = '请在 weibo.com 主站页面同步黑名单';
 
   // 保存原生接口
   if (!window.WB_BL_NATIVE) {
@@ -314,6 +325,9 @@
    * 全量同步：只在用户手动触发或无缓存时使用
    */
   async function fullSync() {
+    if (!canUseSettingApi()) {
+      throw new Error(SETTING_API_HOST_ERROR);
+    }
     const list = [];
     let page = 1,
       cursor = 0,
@@ -347,7 +361,11 @@
   /**
    * 增量同步：默认只跑第一页
    */
-  async function deltaSync(set) {
+  async function deltaSync(set, options = {}) {
+    if (!canUseSettingApi()) {
+      if (options.silent) return set;
+      throw new Error(SETTING_API_HOST_ERROR);
+    }
     const res = await window.WB_BL_NATIVE.fetch(
       '/ajax/setting/getFilteredUsers?page=1',
       { credentials: 'include' }
@@ -373,6 +391,9 @@
    * @returns {Number} 新增 UID 数
    */
   async function syncPages(set, pages = 5) {
+    if (!canUseSettingApi()) {
+      throw new Error(SETTING_API_HOST_ERROR);
+    }
     let page = 1,
       cursor = 0,
       strikes = 0,
@@ -422,7 +443,11 @@
     // 首次运行时不自动采集，等待用户授权后再同步
     if (cache) {
       BL = new Set(cache.split(',').filter(Boolean));
-      BL = await deltaSync(BL);
+      try {
+        BL = await deltaSync(BL, { silent: true });
+      } catch (e) {
+        console.warn('[WB-BL] 黑名单增量同步失败，继续使用本地缓存', e);
+      }
     }
     // 无缓存时 BL 保持空 Set，由 checkFirstRun() 引导用户同步
     injectCSSWhenReady(generateCSSRules());
@@ -444,29 +469,77 @@
       )
       .join('\n');
 
-    // 从设置中读取是否隐藏导航栏视频/推荐图标
-    let hideNavIconsCSS = '';
+    // 从设置中读取是否隐藏导航栏入口。兼容旧版 hideNavVideoRecommend。
+    let cfg = {};
     try {
-      const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
-      if (cfg.hideNavVideoRecommend) {
-        hideNavIconsCSS = `
-          /* 隐藏导航栏视频和推荐图标 */
-          nav a[title="视频"], nav a[title="推荐"],
-          nav [title="视频"], nav [title="推荐"],
-          [class*="_item_"][title="视频"], [class*="_item_"][title="推荐"],
-          a[href*="/tv"], a[href*="/hot"],
-          nav svg[title="画板"], nav svg[title="视频"],
-          [class*="Nav_"] a[href*="/tv"], [class*="Nav_"] a[href*="/hot"] {
+      cfg = JSON.parse(_GM_getValue('cfg', '{}') || '{}');
+    } catch (e) {}
+
+    const legacyHideNav = cfg.hideNavVideoRecommend === true;
+    const hideHotSearch = cfg.hideHotSearch !== false;
+    const hideNavVideo = cfg.hideNavVideo === true || legacyHideNav;
+    const hideNavRecommend = cfg.hideNavRecommend === true || legacyHideNav;
+    const hideNavGame = cfg.hideNavGame !== false;
+    const hideNavSelectors = [];
+
+    if (hideNavVideo) {
+      hideNavSelectors.push(
+        'nav a[title="视频"]',
+        'nav [title="视频"]',
+        '[class*="_item_"][title="视频"]',
+        'a[href*="/tv"]',
+        'nav svg[title="视频"]',
+        '[class*="Nav_"] a[href*="/tv"]'
+      );
+    }
+
+    if (hideNavRecommend) {
+      hideNavSelectors.push(
+        'nav a[title="推荐"]',
+        'nav [title="推荐"]',
+        '[class*="_item_"][title="推荐"]',
+        'a[href*="/hot"]',
+        'nav svg[title="画板"]',
+        '[class*="Nav_"] a[href*="/hot"]'
+      );
+    }
+
+    if (hideNavGame) {
+      hideNavSelectors.push('a[title="游戏"]', 'a[href*="game.weibo.com"]');
+    }
+
+    const hideNavIconsCSS = hideNavSelectors.length
+      ? `
+          /* 隐藏导航栏入口 */
+          ${hideNavSelectors.join(',\n          ')} {
             display: none !important;
           }
-        `;
-      }
-    } catch (e) {}
+        `
+      : '';
+    const hideSearchHotBandCSS = hideHotSearch
+      ? `
+          /* 隐藏微博搜索页热搜榜 */
+          #hot-band-container,
+          .hot-band-container,
+          .hot-band-tabs,
+          div:has(> .hot-band-tabs),
+          div:has(> #hot-band-container),
+          div:has(> .hot-band-container),
+          .card-wrap:has(.hot-band-tabs),
+          .card-wrap:has(.hot-band-container),
+          [class*="card"]:has(> .hot-band-tabs),
+          [class*="card"]:has(> .hot-band-container),
+          [class*="Card"]:has(> .hot-band-tabs) {
+            display: none !important;
+          }
+        `
+      : '';
 
     return `
       ${blRules}
       div[role="link"][title="全部关注"] { display: none !important; }
       .Links_box_17T3k { display: none !important; }
+      ${hideSearchHotBandCSS}
       ${hideNavIconsCSS}
     `;
   }
@@ -523,9 +596,77 @@
     return out;
   }
 
+  const DOM_UID_SELECTOR = [
+    '[data-user-id]',
+    '[data-uid]',
+    '[uid]',
+    '[usercard]',
+    'a[href*="/u/"]',
+    'a[href*="/p/100505"]',
+    'a[href*="weibo.com/"]',
+  ].join(',');
+  const DOM_POST_ROOT_SELECTOR = [
+    '.Feed_body_3R0rO',
+    '[class*="Feed_body_"]',
+    '.card-wrap',
+    '[action-type="feed_list_item"]',
+    '[node-type="feed_list_item"]',
+  ].join(',');
+
+  function extractDOMUIDs(el) {
+    const uids = new Set();
+    const addDirectUID = (value) => {
+      const uid = String(value || '').trim();
+      if (/^\d{5,}$/.test(uid)) uids.add(uid);
+    };
+    const addMatches = (value, re) => {
+      const text = String(value || '');
+      for (const m of text.matchAll(re)) {
+        if (m[1]) uids.add(m[1]);
+      }
+    };
+
+    addDirectUID(el.getAttribute('data-user-id'));
+    addDirectUID(el.getAttribute('data-uid'));
+    addDirectUID(el.getAttribute('uid'));
+    addMatches(el.getAttribute('usercard'), /(?:^|[?&])id=(\d{5,})/g);
+
+    const href = el.getAttribute('href');
+    addMatches(href, /\/u\/(\d{5,})/g);
+    addMatches(href, /\/p\/100505(\d{5,})/g);
+    addMatches(href, /weibo\.com\/(\d{5,})(?:[/?#]|$)/g);
+
+    return uids;
+  }
+
+  function hideBlockedDOMPosts(root = document) {
+    if (!BL.size || !root || !root.querySelectorAll) return;
+    const nodes = [];
+    if (root instanceof Element && root.matches(DOM_UID_SELECTOR)) {
+      nodes.push(root);
+    }
+    root.querySelectorAll(DOM_UID_SELECTOR).forEach((el) => nodes.push(el));
+
+    nodes.forEach((el) => {
+      const hasBlockedUID = [...extractDOMUIDs(el)].some((uid) => BL.has(uid));
+      if (!hasBlockedUID) return;
+
+      const post = el.closest(DOM_POST_ROOT_SELECTOR);
+      if (post && !post.hasAttribute('data-__wb_bl_hidden_by_userscript')) {
+        post.style.setProperty('display', 'none', 'important');
+        post.setAttribute('data-__wb_bl_hidden_by_userscript', '1');
+      }
+    });
+  }
+
   // === 全局 Fetch 拦截 ===
   window.fetch = async function (input, init) {
-    const url = typeof input === 'string' ? input : input.url;
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input?.url || '';
     // 永久屏蔽"全部关注"流
     if (url.includes('unreadfriendstimeline')) {
       return new Response(
@@ -632,15 +773,7 @@
       window._wbbl_t = setTimeout(() => {
         ms.forEach((m) => {
           Array.from(m.addedNodes).forEach((n) => {
-            if (n instanceof HTMLElement && n.matches('.Feed_body_3R0rO')) {
-              if (
-                [...n.querySelectorAll('[data-user-id]')].some((el) =>
-                  BL.has(el.getAttribute('data-user-id'))
-                )
-              ) {
-                n.style.display = 'none';
-              }
-            }
+            if (n instanceof HTMLElement) hideBlockedDOMPosts(n);
           });
         });
       }, THROTTLE_MS);
@@ -648,6 +781,7 @@
     const attach = () => {
       const root = document.body || document.documentElement;
       if (root) {
+        hideBlockedDOMPosts(root);
         obs.observe(root, { childList: true, subtree: true });
         window.addEventListener('beforeunload', () => obs.disconnect());
         // SPA 路由重置
@@ -655,7 +789,9 @@
         history.pushState = function (s, title, url) {
           push.call(this, s, title, url);
           obs.disconnect();
-          obs.observe(document.body || document.documentElement, {
+          const nextRoot = document.body || document.documentElement;
+          hideBlockedDOMPosts(nextRoot);
+          obs.observe(nextRoot, {
             childList: true,
             subtree: true,
           });
@@ -695,7 +831,7 @@
   });
 
   console.log(
-    `[WB-BL] 启动完成 v1.0.0，模仿早期Twitter流式时间线，已缓存 ${BL.size} UIDs`
+    `[WB-BL] 启动完成 v${SCRIPT_VERSION} @ ${location.hostname}，已缓存 ${BL.size} UIDs`
   );
   console.log(
     `[WB-BL] Author: DanielZenFlow | GitHub: https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite`
@@ -710,15 +846,28 @@
   const DEFAULTS = {
     hideHotSearch: true,
     hideSuggestedPeople: true,
-    hideNavVideoRecommend: false,
+    hideNavVideo: false,
+    hideNavRecommend: false,
+    hideNavGame: true,
     defaultLatestTimeline: true,
   };
 
+  function normalizeCfg(rawCfg) {
+    const raw = rawCfg && typeof rawCfg === 'object' ? rawCfg : {};
+    const cfg = Object.assign({}, DEFAULTS, raw);
+    if (raw.hideNavVideoRecommend === true) {
+      if (raw.hideNavVideo === undefined) cfg.hideNavVideo = true;
+      if (raw.hideNavRecommend === undefined) cfg.hideNavRecommend = true;
+    }
+    delete cfg.hideNavVideoRecommend;
+    return cfg;
+  }
+
   function loadCfg() {
     try {
-      return Object.assign({}, DEFAULTS, JSON.parse(GM_getValue('cfg', '{}')));
+      return normalizeCfg(JSON.parse(GM_getValue('cfg', '{}') || '{}'));
     } catch {
-      return Object.assign({}, DEFAULTS);
+      return normalizeCfg();
     }
   }
   function saveCfg(cfg) {
@@ -929,6 +1078,8 @@
       });
   }
   function hidePanels(root = document) {
+    hideSearchHotBand(root);
+
     const BLOCK_TITLES = buildBlockTitles();
     const headings = root.querySelectorAll(
       '.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex'
@@ -947,6 +1098,70 @@
         }
       }
     });
+  }
+  function hideSearchHotBand(root = document) {
+    if (!CFG.hideHotSearch || !root || !root.querySelectorAll) return;
+    const HOT_BAND_SELECTOR =
+      '#hot-band-container, .hot-band-container, .hot-band-tabs';
+    const panels = new Set();
+    if (root instanceof Element && root.matches(HOT_BAND_SELECTOR)) {
+      panels.add(root);
+    }
+    root.querySelectorAll(HOT_BAND_SELECTOR).forEach((panel) => {
+      panels.add(panel);
+    });
+    panels.forEach((panel) => {
+      const target = findSearchHotBandContainer(panel);
+      if (target && target.isConnected) {
+        const parent = target.parentElement;
+        target.remove();
+        removeEmptyHotBandShells(parent);
+      }
+    });
+  }
+  function findSearchHotBandContainer(panel) {
+    if (
+      panel.id === 'hot-band-container' ||
+      panel.classList.contains('hot-band-container')
+    ) {
+      return panel;
+    }
+
+    const card = panel.closest(
+      '.card-wrap, .card, [class*="card"], [class*="Card"]'
+    );
+    if (
+      card &&
+      card !== document.body &&
+      card !== document.documentElement
+    ) {
+      return card;
+    }
+
+    const parent = panel.parentElement;
+    if (
+      parent &&
+      parent !== document.body &&
+      parent !== document.documentElement &&
+      parent.children.length <= 2
+    ) {
+      return parent;
+    }
+    return panel;
+  }
+  function removeEmptyHotBandShells(start) {
+    let cur = start;
+    while (
+      cur &&
+      cur !== document.body &&
+      cur !== document.documentElement &&
+      !normText(cur.textContent) &&
+      cur.children.length === 0
+    ) {
+      const parent = cur.parentElement;
+      cur.remove();
+      cur = parent;
+    }
   }
   if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', () => hidePanels());
@@ -1010,8 +1225,10 @@
 
             <div class="wbset-sec">
               <h4>导航栏设置</h4>
-              <label class="wbset-row"><input type="checkbox" id="wbset-nav"> 隐藏导航栏「视频」「推荐」图标</label>
-              <div class="wbset-row wbset-note">说明：隐藏顶部导航栏中的视频和推荐入口图标。</div>
+              <label class="wbset-row"><input type="checkbox" id="wbset-nav-video"> 隐藏导航栏「视频」图标</label>
+              <label class="wbset-row"><input type="checkbox" id="wbset-nav-recommend"> 隐藏导航栏「推荐」图标</label>
+              <label class="wbset-row"><input type="checkbox" id="wbset-nav-game"> 隐藏导航栏「游戏」图标</label>
+              <div class="wbset-row wbset-note">说明：分别控制顶部导航栏中的视频、推荐和游戏入口。</div>
             </div>
 
             <div class="wbset-sec">
@@ -1119,7 +1336,9 @@
       const $hot = panel.querySelector('#wbset-hot');
       const $sug = panel.querySelector('#wbset-sug');
       const $latest = panel.querySelector('#wbset-latest');
-      const $nav = panel.querySelector('#wbset-nav');
+      const $navVideo = panel.querySelector('#wbset-nav-video');
+      const $navRecommend = panel.querySelector('#wbset-nav-recommend');
+      const $navGame = panel.querySelector('#wbset-nav-game');
       const $uids = panel.querySelector('#wbset-uids');
       const $count = panel.querySelector('#wbset-count');
 
@@ -1127,7 +1346,9 @@
         $hot.checked = !!CFG.hideHotSearch;
         $sug.checked = !!CFG.hideSuggestedPeople;
         $latest.checked = CFG.defaultLatestTimeline !== false; // 默认true
-        $nav.checked = !!CFG.hideNavVideoRecommend;
+        $navVideo.checked = !!CFG.hideNavVideo;
+        $navRecommend.checked = !!CFG.hideNavRecommend;
+        $navGame.checked = CFG.hideNavGame !== false;
       }
       function refreshCount() {
         $count.textContent = String(readBLSet().size);
@@ -1201,26 +1422,38 @@
 
       // 同步按钮事件
       panel.querySelector('#wbset-sync-delta').addEventListener('click', async () => {
-        const oldSize = window.WB_BL_SYNC.getBL().size;
-        await window.WB_BL_SYNC.deltaSync();
-        const newSize = window.WB_BL_SYNC.getBL().size;
-        alert(`✅ 增量同步完成！新增 ${newSize - oldSize} 个 UID`);
-        refreshCount();
+        try {
+          const oldSize = window.WB_BL_SYNC.getBL().size;
+          await window.WB_BL_SYNC.deltaSync();
+          const newSize = window.WB_BL_SYNC.getBL().size;
+          alert(`✅ 增量同步完成！新增 ${newSize - oldSize} 个 UID`);
+          refreshCount();
+        } catch (err) {
+          alert(`❌ 同步失败：${err.message}`);
+        }
       });
 
       panel.querySelector('#wbset-sync-five').addEventListener('click', async () => {
-        const added = await window.WB_BL_SYNC.syncPages(5);
-        alert(`✅ 同步前5页完成！新增 ${added} 个 UID`);
-        refreshCount();
+        try {
+          const added = await window.WB_BL_SYNC.syncPages(5);
+          alert(`✅ 同步前5页完成！新增 ${added} 个 UID`);
+          refreshCount();
+        } catch (err) {
+          alert(`❌ 同步失败：${err.message}`);
+        }
       });
 
       panel.querySelector('#wbset-sync-full').addEventListener('click', async () => {
-        const oldSize = window.WB_BL_SYNC.getBL().size;
-        const newBL = await window.WB_BL_SYNC.fullSync();
-        window.WB_BL_SYNC.setBL(newBL);
-        const newSize = window.WB_BL_SYNC.getBL().size;
-        alert(`✅ 完整同步完成！新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`);
-        refreshCount();
+        try {
+          const oldSize = window.WB_BL_SYNC.getBL().size;
+          const newBL = await window.WB_BL_SYNC.fullSync();
+          window.WB_BL_SYNC.setBL(newBL);
+          const newSize = window.WB_BL_SYNC.getBL().size;
+          alert(`✅ 完整同步完成！新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`);
+          refreshCount();
+        } catch (err) {
+          alert(`❌ 同步失败：${err.message}`);
+        }
       });
 
       panel.querySelector('#wbset-clear-all').addEventListener('click', () => {
@@ -1268,7 +1501,10 @@
         CFG.hideHotSearch = $hot.checked;
         CFG.hideSuggestedPeople = $sug.checked;
         CFG.defaultLatestTimeline = $latest.checked;
-        CFG.hideNavVideoRecommend = $nav.checked;
+        CFG.hideNavVideo = $navVideo.checked;
+        CFG.hideNavRecommend = $navRecommend.checked;
+        CFG.hideNavGame = $navGame.checked;
+        delete CFG.hideNavVideoRecommend;
         saveCfg(CFG);
         // 同步更新 defaultLatest 到油猴菜单使用的存储
         GM_setValue('defaultLatest', $latest.checked);
