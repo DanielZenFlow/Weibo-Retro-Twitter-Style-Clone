@@ -6,8 +6,8 @@
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
-// @homepage     https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite
-// @supportURL   https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite/issues
+// @homepage     https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone
+// @supportURL   https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone/issues
 // @match        https://weibo.com/*
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
@@ -25,7 +25,7 @@
  * Weibo Retro Twitter-Style Clone
  * Copyright (c) 2025 DanielZenFlow
  * Licensed under MIT License
- * GitHub: https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite
+ * GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)
  */
 
 (function () {
@@ -57,7 +57,7 @@
   // === 智能打开链接函数 ===
   function openGitHub() {
     const url =
-      'https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite';
+      'https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone';
 
     // 优先使用油猴的专用API（不会被拦截）
     if (_GM_openInTab) {
@@ -825,7 +825,7 @@
         `${starStatus}\n\n` +
         `作者: DanielZenFlow\n` +
         `许可: MIT License\n` +
-        `GitHub: https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite\n\n` +
+        `GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)\n\n` +
         `感谢使用！如果有帮助请给我们 Star ⭐`
     );
   });
@@ -834,7 +834,7 @@
     `[WB-BL] 启动完成 v${SCRIPT_VERSION} @ ${location.hostname}，已缓存 ${BL.size} UIDs`
   );
   console.log(
-    `[WB-BL] Author: DanielZenFlow | GitHub: https://github.com/DanielZenFlow/Weibo-Blacklist-Enhanced-Lite`
+    `[WB-BL] Author: DanielZenFlow | GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)`
   );
 })();
 
