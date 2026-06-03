@@ -2,7 +2,7 @@
 // @sandbox      raw
 // @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.1.3
+// @version      1.1.4
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -31,7 +31,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.1.3';
+  const SCRIPT_VERSION = '1.1.4';
 
   // === GM_* 接口封装 ===
   const _GM_getValue =
@@ -440,16 +440,15 @@
   
   (async () => {
     const cache = _GM_getValue(UID_KEY, '');
-    // 首次运行时不自动采集，等待用户授权后再同步
     if (cache) {
       BL = new Set(cache.split(',').filter(Boolean));
-      try {
-        BL = await deltaSync(BL, { silent: true });
-      } catch (e) {
-        console.warn('[WB-BL] 黑名单增量同步失败，继续使用本地缓存', e);
-      }
     }
-    // 无缓存时 BL 保持空 Set，由 checkFirstRun() 引导用户同步
+    // 启动时静默合并官方黑名单第一页，修复官方已拉黑但本地未屏蔽的近期用户。
+    try {
+      BL = await deltaSync(BL, { silent: true });
+    } catch (e) {
+      console.warn('[WB-BL] 黑名单增量同步失败，继续使用本地缓存', e);
+    }
     injectCSSWhenReady(generateCSSRules());
 
     // 检查首次运行和Star提醒
@@ -613,6 +612,88 @@
     '[node-type="feed_list_item"]',
   ].join(',');
 
+  function persistBL() {
+    _GM_setValue(UID_KEY, [...BL].join(','));
+  }
+
+  function addUIDToLocalBL(uid) {
+    const id = String(uid || '').trim();
+    if (!/^\d{5,}$/.test(id)) return false;
+    const existed = BL.has(id);
+    BL.add(id);
+    if (!existed) persistBL();
+    return !existed;
+  }
+
+  function removeUIDFromLocalBL(uid) {
+    const id = String(uid || '').trim();
+    if (!/^\d{5,}$/.test(id)) return false;
+    const existed = BL.delete(id);
+    if (existed) persistBL();
+    return existed;
+  }
+
+  function parseUIDFromRequestBody(body) {
+    if (!body) return '';
+
+    if (body instanceof URLSearchParams) {
+      return body.get('uid') || '';
+    }
+    if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      return body.get('uid') || '';
+    }
+    if (typeof body === 'string') {
+      const text = body.trim();
+      if (!text) return '';
+      try {
+        const json = JSON.parse(text);
+        if (json?.uid) return String(json.uid);
+      } catch {}
+      try {
+        return new URLSearchParams(text).get('uid') || '';
+      } catch {}
+      const m = text.match(/(?:^|[?&])uid=(\d{5,})/);
+      return m ? m[1] : '';
+    }
+    if (typeof body === 'object' && body.uid) {
+      return String(body.uid);
+    }
+    return '';
+  }
+
+  function parseUIDFromRequestURL(url) {
+    try {
+      return new URL(url, location.href).searchParams.get('uid') || '';
+    } catch {
+      const m = String(url || '').match(/(?:^|[?&])uid=(\d{5,})/);
+      return m ? m[1] : '';
+    }
+  }
+
+  function parseUIDFromRequest(url, body) {
+    return parseUIDFromRequestBody(body) || parseUIDFromRequestURL(url);
+  }
+
+  async function didFilterRequestSucceed(res) {
+    if (!res?.ok) return false;
+    try {
+      const data = await res.clone().json();
+      return data?.ok !== 0;
+    } catch {
+      return true;
+    }
+  }
+  const USER_CONTEXT_TARGET_SELECTOR = [
+    '[data-user-id]',
+    '[data-uid]',
+    '[uid]',
+    '[usercard]',
+    'a[href*="/u/"]',
+    'a[href*="/p/100505"]',
+    'a[href*="//weibo.com/u/"]',
+    'a[href*="//weibo.com/p/100505"]',
+  ].join(',');
+
   function extractDOMUIDs(el) {
     const uids = new Set();
     const addDirectUID = (value) => {
@@ -637,6 +718,292 @@
     addMatches(href, /weibo\.com\/(\d{5,})(?:[/?#]|$)/g);
 
     return uids;
+  }
+
+  function normDOMText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getProfileURL(el, uid) {
+    const link = el.closest('a[href]');
+    const href = link?.getAttribute('href') || '';
+    if (href && !/^(?:javascript:|#)/i.test(href)) {
+      try {
+        return new URL(href, location.href).href;
+      } catch {}
+    }
+    return uid ? `https://weibo.com/u/${uid}` : '';
+  }
+
+  function getUserDisplayName(el, uid) {
+    const nameSource =
+      el.closest('[title]') ||
+      el.closest('[aria-label]') ||
+      el.closest('a[href]') ||
+      el;
+    const name =
+      normDOMText(nameSource.getAttribute?.('title')) ||
+      normDOMText(nameSource.getAttribute?.('aria-label')) ||
+      normDOMText(nameSource.textContent);
+    return name.replace(/^@+/, '') || uid;
+  }
+
+  function getUserContextFromTarget(target) {
+    if (!(target instanceof Element)) return null;
+    const source = target.closest(USER_CONTEXT_TARGET_SELECTOR);
+    if (!source) return null;
+
+    const uid = [...extractDOMUIDs(source)][0];
+    if (!uid) return null;
+
+    const url = getProfileURL(source, uid);
+    if (!url) return null;
+
+    return {
+      uid,
+      url,
+      name: getUserDisplayName(source, uid),
+      source,
+    };
+  }
+
+  function addContextUserToBL(ctx, options = {}) {
+    if (!ctx?.uid) return;
+    const existed = BL.has(ctx.uid);
+    addUIDToLocalBL(ctx.uid);
+
+    const post = ctx.source.closest(DOM_POST_ROOT_SELECTOR);
+    if (post) {
+      post.style.setProperty('display', 'none', 'important');
+      post.setAttribute('data-__wb_bl_hidden_by_userscript', '1');
+    } else {
+      hideBlockedDOMPosts(document);
+    }
+
+    if (options.showToast !== false) {
+      showUserContextToast(
+        existed ? `@${ctx.name} 已在黑名单中` : `已屏蔽 @${ctx.name}`
+      );
+    }
+    return { existed };
+  }
+
+  function getCookieValue(name) {
+    const item = document.cookie
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${name}=`));
+    return item ? decodeURIComponent(item.slice(name.length + 1)) : '';
+  }
+
+  async function addUserToWeiboBlacklist(uid) {
+    const headers = {
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-requested-with': 'XMLHttpRequest',
+      'client-version': '3.0.0',
+    };
+    const xsrf = getCookieValue('XSRF-TOKEN');
+    if (xsrf) headers['x-xsrf-token'] = xsrf;
+
+    const body = new URLSearchParams({
+      uid,
+      status: '1',
+      interact: '1',
+      follow: '1',
+    });
+
+    const res = await window.WB_BL_NATIVE.fetch(
+      'https://weibo.com/ajax/statuses/filterUser',
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body,
+      }
+    );
+
+    let data = null;
+    try {
+      data = await res.clone().json();
+    } catch {}
+    if (!res.ok || data?.ok === 0) {
+      throw new Error(data?.msg || data?.message || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async function addContextUserToBLAndWeibo(ctx) {
+    if (!ctx?.uid) return;
+    addContextUserToBL(ctx, { showToast: false });
+    showUserContextToast(`已本地屏蔽 @${ctx.name}，正在加入新浪微博黑名单...`);
+
+    try {
+      await addUserToWeiboBlacklist(ctx.uid);
+      showUserContextToast(`已屏蔽 @${ctx.name}，并加入新浪微博黑名单`);
+    } catch (err) {
+      console.warn('[WB-BL] 新浪微博黑名单加入失败', err);
+      showUserContextToast(`本地已屏蔽 @${ctx.name}，新浪微博黑名单加入失败`);
+    }
+  }
+
+  function openContextUserProfile(ctx) {
+    if (!ctx?.url) return;
+    if (_GM_openInTab) {
+      _GM_openInTab(ctx.url, { active: true });
+      return;
+    }
+    window.open(ctx.url, '_blank', 'noopener');
+  }
+
+  function injectUserContextMenuCSS() {
+    injectCSSWhenReady(`
+      .wb-user-context-menu {
+        position: fixed;
+        z-index: 1000000;
+        min-width: 248px;
+        padding: 6px;
+        display: none;
+        background: #fff;
+        color: #111;
+        border: 1px solid rgba(0,0,0,.08);
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0,0,0,.18);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .wb-user-context-menu button {
+        width: 100%;
+        display: block;
+        border: 0;
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        font: inherit;
+      }
+      .wb-user-context-menu button:hover {
+        background: #f5f5f5;
+      }
+      .wb-user-context-toast {
+        position: fixed;
+        left: 50%;
+        bottom: 28px;
+        z-index: 1000001;
+        transform: translateX(-50%);
+        padding: 9px 12px;
+        display: none;
+        max-width: min(360px, 88vw);
+        background: rgba(17,17,17,.92);
+        color: #fff;
+        border-radius: 999px;
+        font-size: 13px;
+        line-height: 1.4;
+        box-shadow: 0 8px 24px rgba(0,0,0,.22);
+      }
+    `);
+  }
+
+  function initUserContextMenu() {
+    injectUserContextMenuCSS();
+    let activeCtx = null;
+    let toastTimer = null;
+
+    const ensureMenu = () => {
+      let menu = document.querySelector('.wb-user-context-menu');
+      if (menu) return menu;
+
+      menu = document.createElement('div');
+      menu.className = 'wb-user-context-menu';
+      menu.innerHTML = `
+        <button type="button" data-action="block"></button>
+        <button type="button" data-action="block-official"></button>
+        <button type="button" data-action="open">在新选项卡中打开链接</button>
+      `;
+      menu.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const btn = e.target.closest('button[data-action]');
+        if (!btn || !activeCtx) return;
+        const action = btn.getAttribute('data-action');
+        const ctx = activeCtx;
+        hideMenu();
+        if (action === 'block') addContextUserToBL(ctx);
+        if (action === 'block-official') addContextUserToBLAndWeibo(ctx);
+        if (action === 'open') openContextUserProfile(ctx);
+      });
+      (document.body || document.documentElement).appendChild(menu);
+      return menu;
+    };
+
+    const positionMenu = (menu, x, y) => {
+      menu.style.display = 'block';
+      menu.style.left = `${x}px`;
+      menu.style.top = `${y}px`;
+
+      const rect = menu.getBoundingClientRect();
+      const left = Math.min(x, window.innerWidth - rect.width - 8);
+      const top = Math.min(y, window.innerHeight - rect.height - 8);
+      menu.style.left = `${Math.max(8, left)}px`;
+      menu.style.top = `${Math.max(8, top)}px`;
+    };
+
+    const hideMenu = () => {
+      const menu = document.querySelector('.wb-user-context-menu');
+      if (menu) menu.style.display = 'none';
+      activeCtx = null;
+    };
+
+    window.showUserContextToast = (message) => {
+      let toast = document.querySelector('.wb-user-context-toast');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.className = 'wb-user-context-toast';
+        (document.body || document.documentElement).appendChild(toast);
+      }
+      toast.textContent = message;
+      toast.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.style.display = 'none';
+      }, 1800);
+    };
+
+    document.addEventListener('contextmenu', (e) => {
+      const ctx = getUserContextFromTarget(e.target);
+      if (!ctx) {
+        hideMenu();
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      activeCtx = ctx;
+
+      const menu = ensureMenu();
+      const blockBtn = menu.querySelector('[data-action="block"]');
+      const officialBlockBtn = menu.querySelector(
+        '[data-action="block-official"]'
+      );
+      blockBtn.textContent = BL.has(ctx.uid)
+        ? `已屏蔽 @${ctx.name}`
+        : `屏蔽 @${ctx.name}`;
+      officialBlockBtn.textContent = `屏蔽 @${ctx.name}（同时加入新浪微博黑名单）`;
+      positionMenu(menu, e.clientX, e.clientY);
+    });
+
+    document.addEventListener('click', hideMenu);
+    window.addEventListener('scroll', hideMenu, true);
+    window.addEventListener('resize', hideMenu);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') hideMenu();
+    });
+  }
+
+  function showUserContextToast(message) {
+    if (typeof window.showUserContextToast === 'function') {
+      window.showUserContextToast(message);
+    }
   }
 
   function hideBlockedDOMPosts(root = document) {
@@ -682,20 +1049,27 @@
         }
       );
     }
-    // 黑名单增删
-    if (typeof url === 'string') {
-      if (url.includes('/filterUser')) {
-        const uid = JSON.parse(init?.body || '{}').uid;
-        BL.add(String(uid));
-        _GM_setValue(UID_KEY, [...BL].join(','));
+    const isFilterUserRequest =
+      typeof url === 'string' && url.includes('/filterUser');
+    const isUnfilterUserRequest =
+      typeof url === 'string' && url.includes('/unfilterUser');
+    const filterUID =
+      isFilterUserRequest || isUnfilterUserRequest
+        ? parseUIDFromRequest(url, init?.body)
+        : '';
+
+    const res = await window.WB_BL_NATIVE.fetch(input, init);
+
+    if (filterUID && (await didFilterRequestSucceed(res))) {
+      if (isFilterUserRequest) {
+        addUIDToLocalBL(filterUID);
+        hideBlockedDOMPosts(document);
       }
-      if (url.includes('/unfilterUser')) {
-        const uid = JSON.parse(init?.body || '{}').uid;
-        BL.delete(String(uid));
-        _GM_setValue(UID_KEY, [...BL].join(','));
+      if (isUnfilterUserRequest) {
+        removeUIDFromLocalBL(filterUID);
       }
     }
-    const res = await window.WB_BL_NATIVE.fetch(input, init);
+
     if (
       typeof url === 'string' &&
       /\/(?:ajax\/(?:feed|statuses|comment|getCommentList|repost|like)|graphql\/|(?:mymblog|timeline|index))/.test(
@@ -722,6 +1096,26 @@
   XMLHttpRequest.prototype.send = function (body) {
     this.addEventListener('readystatechange', () => {
       if (this.readyState === 4 && this.status === 200 && this._url) {
+        const isFilterUserRequest = this._url.includes('/filterUser');
+        const isUnfilterUserRequest = this._url.includes('/unfilterUser');
+        if (isFilterUserRequest || isUnfilterUserRequest) {
+          const uid = parseUIDFromRequest(this._url, body);
+          let ok = true;
+          try {
+            const data = JSON.parse(this.responseText);
+            ok = data?.ok !== 0;
+          } catch {}
+          if (uid && ok) {
+            if (isFilterUserRequest) {
+              addUIDToLocalBL(uid);
+              hideBlockedDOMPosts(document);
+            }
+            if (isUnfilterUserRequest) {
+              removeUIDFromLocalBL(uid);
+            }
+          }
+        }
+
         // 屏蔽"全部关注"流
         if (this._url.includes('unreadfriendstimeline')) {
           Object.defineProperty(this, 'responseText', {
@@ -803,6 +1197,8 @@
     attach();
   })();
 
+  initUserContextMenu();
+
   /* === Tampermonkey 菜单（精简版） === */
 
   // Star
@@ -819,7 +1215,7 @@
     const starStatus = isDisabled ? '🔕 Star提醒已关闭' : '🔔 Star提醒已开启';
 
     alert(
-      `Weibo Retro Twitter-Style Clone v1.0.0\n` +
+      `Weibo Retro Twitter-Style Clone v${SCRIPT_VERSION}\n` +
         `模仿早期Twitter时间线的完整版微博增强工具\n\n` +
         `当前缓存: ${BL.size} 个用户\n` +
         `${starStatus}\n\n` +
@@ -914,7 +1310,7 @@
     const uids = Array.from(blSet);
     const exportData = {
       exportTime: new Date().toISOString(),
-      version: '1.0.4',
+      version: '1.1.4',
       scriptName: 'Weibo Retro Twitter-Style Clone',
       count: uids.length,
       uids: uids,
