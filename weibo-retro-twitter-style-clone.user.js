@@ -461,7 +461,11 @@
       .map(
         (uid) => `
       .Feed_body_3R0rO:has([data-user-id="${uid}"]),
-      .card-wrap:has([data-user-id="${uid}"]) {
+      .Feed_body_3R0rO:has([usercard="${uid}"]),
+      .Feed_body_3R0rO:has([data-usercard="${uid}"]),
+      .card-wrap:has([data-user-id="${uid}"]),
+      .card-wrap:has([usercard="${uid}"]),
+      .card-wrap:has([data-usercard="${uid}"]) {
         display: none !important;
       }
     `
@@ -600,8 +604,16 @@
     '[data-uid]',
     '[uid]',
     '[usercard]',
+    '[data-usercard]',
+    '[tbinfo*="ouid="]',
+    '[action-data*="uid="]',
+    '[action-data*="ouid="]',
+    '[data-card*="uid"]',
     'a[href*="/u/"]',
     'a[href*="/p/100505"]',
+    'a[href*="/n/"]',
+    'a[nick-name]',
+    '[nick-name]',
     'a[href*="weibo.com/"]',
   ].join(',');
   const DOM_POST_ROOT_SELECTOR = [
@@ -688,10 +700,16 @@
     '[data-uid]',
     '[uid]',
     '[usercard]',
+    '[data-usercard]',
+    '[nick-name]',
+    '[action-data*="uid="]',
+    '[action-data*="ouid="]',
     'a[href*="/u/"]',
     'a[href*="/p/100505"]',
+    'a[href*="/n/"]',
     'a[href*="//weibo.com/u/"]',
     'a[href*="//weibo.com/p/100505"]',
+    'a[href*="//weibo.com/n/"]',
   ].join(',');
 
   function extractDOMUIDs(el) {
@@ -710,12 +728,40 @@
     addDirectUID(el.getAttribute('data-user-id'));
     addDirectUID(el.getAttribute('data-uid'));
     addDirectUID(el.getAttribute('uid'));
-    addMatches(el.getAttribute('usercard'), /(?:^|[?&])id=(\d{5,})/g);
+    addDirectUID(el.getAttribute('usercard'));
+    addDirectUID(el.getAttribute('data-usercard'));
+
+    ['usercard', 'data-usercard'].forEach((attr) => {
+      const value = el.getAttribute(attr);
+      addMatches(value, /(?:^|[?&#;\s])id=(\d{5,})/g);
+      addMatches(
+        value,
+        /(?:^|[?&#;\s])(?:uid|ouid|user_id|userId|profile_uid)=(\d{5,})/g
+      );
+    });
+
+    [
+      'usercard',
+      'data-usercard',
+      'action-data',
+      'tbinfo',
+      'suda-data',
+      'diss-data',
+      'data-card',
+      'data-params',
+    ].forEach((attr) => {
+      const value = el.getAttribute(attr);
+      addMatches(
+        value,
+        /(?:^|[?&#;\s])(?:uid|ouid|user_id|userId|profile_uid)=(\d{5,})/g
+      );
+    });
 
     const href = el.getAttribute('href');
     addMatches(href, /\/u\/(\d{5,})/g);
     addMatches(href, /\/p\/100505(\d{5,})/g);
     addMatches(href, /weibo\.com\/(\d{5,})(?:[/?#]|$)/g);
+    addMatches(href, /(?:[?&#])(?:uid|ouid)=(\d{5,})/g);
 
     return uids;
   }
@@ -724,46 +770,185 @@
     return String(s || '').replace(/\s+/g, ' ').trim();
   }
 
-  function getProfileURL(el, uid) {
-    const link = el.closest('a[href]');
-    const href = link?.getAttribute('href') || '';
-    if (href && !/^(?:javascript:|#)/i.test(href)) {
-      try {
-        return new URL(href, location.href).href;
-      } catch {}
-    }
-    return uid ? `https://weibo.com/u/${uid}` : '';
+  function getOwnDOMText(el) {
+    if (!(el instanceof Element)) return '';
+    let text = '';
+    el.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) text += node.textContent || '';
+    });
+    return normDOMText(text);
   }
 
-  function getUserDisplayName(el, uid) {
-    const nameSource =
-      el.closest('[title]') ||
-      el.closest('[aria-label]') ||
+  const BAD_USER_NAME_TEXT = new Set([
+    '关注',
+    '已关注',
+    '互相关注',
+    '特别关注',
+    '取消关注',
+    '粉丝',
+    '微博',
+  ]);
+
+  function cleanUserDisplayName(text) {
+    const name = normDOMText(text).replace(/^@+/, '');
+    if (!name || BAD_USER_NAME_TEXT.has(name)) return '';
+    if (name.length > 32) return '';
+    return name;
+  }
+
+  function pushNameCandidate(candidates, text, score) {
+    const name = cleanUserDisplayName(text);
+    if (name) candidates.push({ name, score });
+  }
+
+  function getElementsForUID(root, uid) {
+    if (!(root instanceof Element) || !uid) return [];
+    const selector = [
+      `[data-user-id="${uid}"]`,
+      `[data-uid="${uid}"]`,
+      `[uid="${uid}"]`,
+      `[usercard="${uid}"]`,
+      `[data-usercard="${uid}"]`,
+      `a[href*="/u/${uid}"]`,
+      `a[href*="/p/100505${uid}"]`,
+    ].join(',');
+    const elements = [];
+    if (root.matches(selector)) elements.push(root);
+    root.querySelectorAll(selector).forEach((item) => elements.push(item));
+    return elements;
+  }
+
+  function getNameFromElementAttributes(el) {
+    return (
+      el.getAttribute?.('nick-name') ||
+      el.getAttribute?.('title') ||
+      el.getAttribute?.('aria-label') ||
+      ''
+    );
+  }
+
+  function normalizeProfileURL(href, uid) {
+    const raw = String(href || '').trim();
+    if (!raw || /^(?:javascript:|#)/i.test(raw)) {
+      return uid ? `https://weibo.com/u/${uid}` : '';
+    }
+    try {
+      if (/^\/(?:u|p|n)\//.test(raw)) {
+        return new URL(raw, 'https://weibo.com').href;
+      }
+      if (/^\/\/(?:www\.)?weibo\.com\//.test(raw)) {
+        return `https:${raw}`;
+      }
+      const url = new URL(raw, location.href);
+      if (
+        url.hostname === 's.weibo.com' &&
+        /^\/(?:u|p|n)\//.test(url.pathname)
+      ) {
+        url.hostname = 'weibo.com';
+      }
+      return url.href;
+    } catch {
+      return uid ? `https://weibo.com/u/${uid}` : '';
+    }
+  }
+
+  const PROFILE_LINK_SELECTOR = [
+    'a[href*="/u/"]',
+    'a[href*="/p/100505"]',
+    'a[href*="/n/"]',
+    'a[href*="//weibo.com/u/"]',
+    'a[href*="//weibo.com/p/100505"]',
+    'a[href*="//weibo.com/n/"]',
+    'a[href*="weibo.com/"]',
+  ].join(',');
+
+  function getProfileURL(el, uid, root = null) {
+    const link =
       el.closest('a[href]') ||
-      el;
-    const name =
-      normDOMText(nameSource.getAttribute?.('title')) ||
-      normDOMText(nameSource.getAttribute?.('aria-label')) ||
-      normDOMText(nameSource.textContent);
-    return name.replace(/^@+/, '') || uid;
+      root?.querySelector?.(PROFILE_LINK_SELECTOR) ||
+      null;
+    const href = link?.getAttribute('href') || '';
+    return normalizeProfileURL(href, uid);
+  }
+
+  function getUserDisplayName(el, uid, root = null) {
+    const candidates = [];
+    const userRoots = [el, root, el.closest('a[href]')].filter(Boolean);
+    let parent = el.parentElement;
+    let depth = 0;
+    while (
+      parent &&
+      parent !== document.body &&
+      parent !== document.documentElement &&
+      depth < 5
+    ) {
+      userRoots.push(parent);
+      parent = parent.parentElement;
+      depth++;
+    }
+
+    userRoots.forEach((item) => {
+      getElementsForUID(item, uid).forEach((candidateEl) => {
+        pushNameCandidate(candidates, getOwnDOMText(candidateEl), 100);
+        pushNameCandidate(
+          candidates,
+          getNameFromElementAttributes(candidateEl),
+          80
+        );
+      });
+    });
+
+    const directNameSource =
+      el.closest('[nick-name]') ||
+      el.closest('[title]') ||
+      el.closest('[aria-label]');
+    if (directNameSource) {
+      pushNameCandidate(
+        candidates,
+        getNameFromElementAttributes(directNameSource),
+        70
+      );
+    }
+
+    pushNameCandidate(candidates, getOwnDOMText(el), 60);
+    pushNameCandidate(candidates, getNameFromElementAttributes(el), 50);
+
+    candidates.sort(
+      (a, b) => b.score - a.score || a.name.length - b.name.length
+    );
+    return candidates[0]?.name || uid;
+  }
+
+  function firstDOMUID(...elements) {
+    for (const el of elements) {
+      if (!(el instanceof Element)) continue;
+      const uid = [...extractDOMUIDs(el)][0];
+      if (uid) return uid;
+    }
+    return '';
   }
 
   function getUserContextFromTarget(target) {
-    if (!(target instanceof Element)) return null;
-    const source = target.closest(USER_CONTEXT_TARGET_SELECTOR);
+    const el =
+      target instanceof Element ? target : target?.parentElement || null;
+    if (!el) return null;
+
+    const source = el.closest(USER_CONTEXT_TARGET_SELECTOR);
     if (!source) return null;
 
-    const uid = [...extractDOMUIDs(source)][0];
+    const post = source.closest(DOM_POST_ROOT_SELECTOR);
+    const uid = firstDOMUID(source, post);
     if (!uid) return null;
 
-    const url = getProfileURL(source, uid);
+    const url = getProfileURL(source, uid, post);
     if (!url) return null;
 
     return {
       uid,
       url,
-      name: getUserDisplayName(source, uid),
+      name: getUserDisplayName(el, uid, post),
       source,
+      root: post,
     };
   }
 
@@ -772,7 +957,10 @@
     const existed = BL.has(ctx.uid);
     addUIDToLocalBL(ctx.uid);
 
-    const post = ctx.source.closest(DOM_POST_ROOT_SELECTOR);
+    const post =
+      ctx.root ||
+      ctx.source.closest(DOM_POST_ROOT_SELECTOR) ||
+      ctx.source.closest(PROFILE_LINK_SELECTOR);
     if (post) {
       post.style.setProperty('display', 'none', 'important');
       post.setAttribute('data-__wb_bl_hidden_by_userscript', '1');
@@ -969,7 +1157,7 @@
       }, 1800);
     };
 
-    document.addEventListener('contextmenu', (e) => {
+    const handleContextMenu = (e) => {
       const ctx = getUserContextFromTarget(e.target);
       if (!ctx) {
         hideMenu();
@@ -990,7 +1178,9 @@
         : `屏蔽 @${ctx.name}`;
       officialBlockBtn.textContent = `屏蔽 @${ctx.name}（同时加入新浪微博黑名单）`;
       positionMenu(menu, e.clientX, e.clientY);
-    });
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu, true);
 
     document.addEventListener('click', hideMenu);
     window.addEventListener('scroll', hideMenu, true);
@@ -1018,7 +1208,8 @@
       const hasBlockedUID = [...extractDOMUIDs(el)].some((uid) => BL.has(uid));
       if (!hasBlockedUID) return;
 
-      const post = el.closest(DOM_POST_ROOT_SELECTOR);
+      const post =
+        el.closest(DOM_POST_ROOT_SELECTOR) || el.closest(PROFILE_LINK_SELECTOR);
       if (post && !post.hasAttribute('data-__wb_bl_hidden_by_userscript')) {
         post.style.setProperty('display', 'none', 'important');
         post.setAttribute('data-__wb_bl_hidden_by_userscript', '1');
