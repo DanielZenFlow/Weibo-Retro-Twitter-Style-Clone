@@ -2,7 +2,7 @@
 // @sandbox      raw
 // @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.2.0
+// @version      1.2.1
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -31,7 +31,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.2.0';
+  const SCRIPT_VERSION = '1.2.1';
 
   // === GM_* 接口封装 ===
   const _GM_getValue =
@@ -279,6 +279,7 @@
     // SPA路由变化时同步Tab状态
     let currentPath = location.pathname;
     const handleRouteChange = () => {
+      syncRelationshipPageMode();
       const newPath = location.pathname;
       if (newPath !== currentPath) {
         const isNowHome = newPath === '/' || newPath === '';
@@ -311,6 +312,7 @@
   const BLOCKED_CONTENT_HIDE_ATTR = 'data-__wb_bl_hidden_by_userscript';
   const BLOCKED_CONTENT_UID_ATTR = 'data-__wb_bl_hidden_uid';
   const BLOCKED_CONTENT_HIDE_SELECTOR = `[${BLOCKED_CONTENT_HIDE_ATTR}]`;
+  const RELATIONSHIP_PAGE_ATTR = 'data-__wb_relationship_list_page';
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
   const FLOATING_VIDEO_PLAYER_SELECTOR = [
     '.mini-player',
@@ -528,6 +530,11 @@
   }
 
   function refreshBlockedDOMAfterBLChange(options = {}) {
+    syncRelationshipPageMode();
+    if (isRelationshipListPage()) {
+      restoreHiddenRelationshipItems(document);
+      return;
+    }
     if (options.restoreHidden) {
       restoreBlockedContentHideState(document);
     }
@@ -585,6 +592,7 @@
   } catch {}
 
   (async () => {
+    syncRelationshipPageMode();
     BL = readLocalBLCache();
     // 启动时静默合并官方黑名单第一页，修复官方已拉黑但本地未屏蔽的近期用户。
     try {
@@ -680,6 +688,29 @@
         padding: 0 !important;
         border: 0 !important;
         overflow: hidden !important;
+      }
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR} {
+        display: revert !important;
+        height: auto !important;
+        min-height: 0 !important;
+        margin: revert !important;
+        padding: revert !important;
+        border: revert !important;
+        overflow: visible !important;
+      }
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR}.woo-box-flex,
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR}[class*="woo-box-flex"],
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR}.wbpro-scroller-item,
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR}[class*="wbpro-scroller-item"],
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] .vue-recycle-scroller__item-view ${BLOCKED_CONTENT_HIDE_SELECTOR}.woo-box-flex,
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] .vue-recycle-scroller__item-view ${BLOCKED_CONTENT_HIDE_SELECTOR}[class*="woo-box-flex"],
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] .vue-recycle-scroller__item-view ${BLOCKED_CONTENT_HIDE_SELECTOR}.wbpro-scroller-item,
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] .vue-recycle-scroller__item-view ${BLOCKED_CONTENT_HIDE_SELECTOR}[class*="wbpro-scroller-item"] {
+        display: flex !important;
+      }
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] a${BLOCKED_CONTENT_HIDE_SELECTOR},
+      html[${RELATIONSHIP_PAGE_ATTR}="1"] div${BLOCKED_CONTENT_HIDE_SELECTOR}:not(.woo-box-flex):not([class*="woo-box-flex"]) {
+        display: block !important;
       }
       [${COMPACTED_VIRTUAL_ITEM_ATTR}] {
         transform: translateY(var(--wb-bl-compact-y, 0px)) translateX(var(--wb-bl-compact-x, 0px)) !important;
@@ -786,6 +817,7 @@
   }
 
   function filterData(obj, seen = new WeakMap(), depth = 0) {
+    if (isRelationshipListPage()) return obj;
     if (!obj || typeof obj !== 'object') return obj;
     if (depth > MAX_FILTER_DEPTH) return obj;
     if (seen.has(obj)) return seen.get(obj);
@@ -809,6 +841,27 @@
           : v;
     }
     return out;
+  }
+
+  function isRelationshipFriendsURL(url) {
+    return (
+      typeof url === 'string' &&
+      /\/ajax\/friendships\/friends(?:[?#]|$)/.test(url)
+    );
+  }
+
+  function normalizeRelationshipFriendsData(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+    const hasOfficialFilteredUsers =
+      data.has_filtered_fans === true || data.has_filtered_attentions === true;
+    if (!hasOfficialFilteredUsers) return data;
+
+    const displayTotal = Number(data.display_total_number);
+    if (!Number.isFinite(displayTotal) || displayTotal < 0) return data;
+
+    const normalized = Object.assign({}, data);
+    normalized.total_number = displayTotal;
+    return normalized;
   }
 
   const DOM_UID_SELECTOR = [
@@ -838,7 +891,13 @@
     '[action-type="feed_list_item"]',
     '[node-type="feed_list_item"]',
   ].join(',');
+  const COMMENT_CONTENT_ROOT_ATTR = 'data-__wb_comment_root_by_userscript';
   const DOM_COMMENT_ROOT_SELECTOR = [
+    `[${COMMENT_CONTENT_ROOT_ATTR}]`,
+    '.wbpro-list > .item1',
+    '.wbpro-list [class~="item1"]',
+    '.wbpro-list .list2 > .item2',
+    '.wbpro-list [class~="item2"]',
     '[class*="Comment_wrap_"]',
     '[class*="Comment_item_"]',
     '[class*="CommentItem"]',
@@ -1012,26 +1071,65 @@
     return /^\/u\/page\/follow\/\d+/.test(location.pathname);
   }
 
-  function restoreHiddenRelationshipItems(root = document) {
-    if (!root || !root.querySelectorAll) return;
-    const nodes = [];
-    if (root instanceof Element && root.matches(BLOCKED_CONTENT_HIDE_SELECTOR)) {
-      nodes.push(root);
+  function syncRelationshipPageMode() {
+    const root = document.documentElement;
+    if (!root) return;
+    if (isRelationshipListPage()) {
+      root.setAttribute(RELATIONSHIP_PAGE_ATTR, '1');
+    } else {
+      root.removeAttribute(RELATIONSHIP_PAGE_ATTR);
     }
-    root
-      .querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
-      .forEach((el) => nodes.push(el));
+  }
+
+  function restoreHiddenRelationshipItems(root = document, options = {}) {
+    syncRelationshipPageMode();
+    if (!isRelationshipListPage() || !document.querySelectorAll) return;
+    virtualScrollerCompactionState = new WeakMap();
+    clearVirtualCompactionState(document);
+    const nodes = new Set();
+    const collect = (scope) => {
+      if (!scope || !scope.querySelectorAll) return;
+      if (
+        scope instanceof Element &&
+        scope.matches(BLOCKED_CONTENT_HIDE_SELECTOR)
+      ) {
+        nodes.add(scope);
+      }
+      scope
+        .querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
+        .forEach((el) => nodes.add(el));
+    };
+    collect(root);
+    if (root !== document) collect(document);
     nodes.forEach((el) => {
-      el.style.removeProperty('display');
-      el.style.removeProperty('height');
-      el.style.removeProperty('min-height');
-      el.style.removeProperty('margin');
-      el.style.removeProperty('padding');
-      el.style.removeProperty('border');
-      el.style.removeProperty('overflow');
-      el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
-      el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
+      clearOwnBlockedContentHideState(el);
+      const item = el.closest?.(VIRTUAL_VIEW_SELECTOR);
+      if (item) clearVirtualItemCompaction(item);
+      const wrapper = el.closest?.(VIRTUAL_WRAPPER_SELECTOR);
+      if (wrapper) clearVirtualWrapperCompaction(wrapper);
     });
+    if (options.reschedule === false) return;
+    const rerun = () =>
+      restoreHiddenRelationshipItems(document, { reschedule: false });
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(rerun);
+    }
+    setTimeout(rerun, 80);
+    setTimeout(rerun, 300);
+  }
+
+  function clearOwnBlockedContentHideState(el) {
+    if (!(el instanceof Element)) return;
+    el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
+    el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
+    el.removeAttribute(COMMENT_CONTENT_ROOT_ATTR);
+    el.style.removeProperty('display');
+    el.style.removeProperty('height');
+    el.style.removeProperty('min-height');
+    el.style.removeProperty('margin');
+    el.style.removeProperty('padding');
+    el.style.removeProperty('border');
+    el.style.removeProperty('overflow');
   }
 
   function clearBlockedContentHideState(root) {
@@ -1040,17 +1138,7 @@
     root
       .querySelectorAll?.(BLOCKED_CONTENT_HIDE_SELECTOR)
       .forEach((el) => nodes.push(el));
-    nodes.forEach((el) => {
-      el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
-      el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
-      el.style.removeProperty('display');
-      el.style.removeProperty('height');
-      el.style.removeProperty('min-height');
-      el.style.removeProperty('margin');
-      el.style.removeProperty('padding');
-      el.style.removeProperty('border');
-      el.style.removeProperty('overflow');
-    });
+    nodes.forEach((el) => clearOwnBlockedContentHideState(el));
   }
 
   function getOwnDOMText(el) {
@@ -1338,15 +1426,136 @@
     return text.length > 30 && el.children.length >= 2;
   }
 
+  function isPostContentRoot(el) {
+    return (
+      el instanceof Element &&
+      el.matches(DOM_POST_ROOT_SELECTOR) &&
+      !el.matches(DOM_COMMENT_ROOT_SELECTOR)
+    );
+  }
+
+  function isUnsafePostRootForUID(root, uid) {
+    if (!isPostContentRoot(root) || !uid) return false;
+    const primaryUID = firstDOMUID(root);
+    return !!(primaryUID && primaryUID !== uid);
+  }
+
+  function looksLikeCommentRoot(el, source = null) {
+    if (!(el instanceof Element)) return false;
+    if (isHardHideBoundary(el) || isPostContentRoot(el)) return false;
+    const marker = [
+      el.className,
+      el.getAttribute('action-type'),
+      el.getAttribute('node-type'),
+      el.getAttribute('data-testid'),
+      el.getAttribute('role'),
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (/comment|reply|Comment|Reply|评论|回复/.test(marker)) return true;
+
+    const rect = el.getBoundingClientRect();
+    if (
+      rect.height <= 0 ||
+      rect.height > Math.min(window.innerHeight * 0.65, 560)
+    ) {
+      return false;
+    }
+    if (source && !el.contains(source)) return false;
+    const text = normDOMText(el.textContent);
+    if (!text || text.length > 1200) return false;
+    const hasCommentAction = /回复|赞|删除|举报|展开|查看/.test(text);
+    const hasSiblingDivider =
+      el.nextElementSibling?.matches?.('.woo-divider-main') ||
+      el.previousElementSibling?.matches?.('.woo-divider-main');
+    return hasCommentAction || hasSiblingDivider;
+  }
+
+  function markCommentRoot(root) {
+    if (root instanceof Element) {
+      root.setAttribute(COMMENT_CONTENT_ROOT_ATTR, '1');
+    }
+    return root;
+  }
+
+  function isCommentContentRoot(el) {
+    return el instanceof Element && el.matches(DOM_COMMENT_ROOT_SELECTOR);
+  }
+
+  function isInsideCommentContentRoot(el) {
+    return el instanceof Element && !!el.closest(DOM_COMMENT_ROOT_SELECTOR);
+  }
+
+  function hasHiddenNonCommentContent(root = document) {
+    if (isRelationshipListPage()) return false;
+    if (!root || !root.querySelectorAll) return false;
+    const nodes = [];
+    if (root instanceof Element && root.matches(BLOCKED_CONTENT_HIDE_SELECTOR)) {
+      nodes.push(root);
+    }
+    root
+      .querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
+      .forEach((node) => nodes.push(node));
+    return nodes.some((node) => !isInsideCommentContentRoot(node));
+  }
+
+  function findCommentRootForUID(el, uid) {
+    if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
+      return null;
+    }
+    const explicit = el.closest(DOM_COMMENT_ROOT_SELECTOR);
+    if (
+      explicit &&
+      elementHasUID(explicit, uid) &&
+      !isOverBroadHideRoot(explicit, el)
+    ) {
+      return markCommentRoot(explicit);
+    }
+
+    let fallback = null;
+    let cur = el.parentElement;
+    let depth = 0;
+    while (
+      cur &&
+      cur !== document.body &&
+      cur !== document.documentElement &&
+      depth < 10
+    ) {
+      if (isPostContentRoot(cur) || cur.matches(VIRTUAL_VIEW_SELECTOR)) break;
+      if (
+        elementHasUID(cur, uid) &&
+        !isOverBroadHideRoot(cur, el) &&
+        looksLikeCommentRoot(cur, el)
+      ) {
+        return markCommentRoot(cur);
+      }
+      if (
+        !fallback &&
+        elementHasUID(cur, uid) &&
+        !isOverBroadHideRoot(cur, el) &&
+        cur.children.length >= 2
+      ) {
+        fallback = cur;
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    return fallback ? markCommentRoot(fallback) : null;
+  }
+
   function findContentRootForUID(el, uid) {
     if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
       return null;
     }
 
+    const commentRoot = findCommentRootForUID(el, uid);
+    if (commentRoot) return commentRoot;
+
     const explicit = el.closest(DOM_CONTENT_ROOT_SELECTOR);
     if (
       explicit &&
       elementHasUID(explicit, uid) &&
+      !isUnsafePostRootForUID(explicit, uid) &&
       !isOverBroadHideRoot(explicit, el)
     ) {
       return explicit;
@@ -1362,6 +1571,7 @@
     ) {
       if (
         elementHasUID(cur, uid) &&
+        !isUnsafePostRootForUID(cur, uid) &&
         !isOverBroadHideRoot(cur, el) &&
         looksLikeContentRoot(cur)
       ) {
@@ -1414,6 +1624,15 @@
 
   function findHideShell(root) {
     if (!(root instanceof Element)) return null;
+    const commentRoot = root.closest(DOM_COMMENT_ROOT_SELECTOR);
+    if (
+      commentRoot &&
+      isEligibleVirtualScrollerItem(commentRoot) &&
+      !isOverBroadHideRoot(commentRoot, root)
+    ) {
+      return commentRoot;
+    }
+
     const virtualView = root.closest(VIRTUAL_VIEW_SELECTOR);
     if (
       virtualView &&
@@ -1469,6 +1688,10 @@
   }
 
   function hideContentRoot(root, uid = '') {
+    if (isRelationshipListPage()) {
+      restoreHiddenRelationshipItems(document);
+      return false;
+    }
     const target = findHideShell(root);
     if (
       !(target instanceof Element) ||
@@ -1799,21 +2022,33 @@
     return y <= -9000 || /translateY\(\s*-9999px\s*\)/i.test(transform);
   }
 
-  function isBlockedVirtualItem(item) {
-    if (!(item instanceof Element)) return false;
-    const uid = firstBlockedDOMUIDIn(item);
-    if (!uid) {
-      if (
-        item.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR) ||
-        item.querySelector(BLOCKED_CONTENT_HIDE_SELECTOR)
-      ) {
-        clearBlockedContentHideState(item);
-      }
-      return false;
+  function hasUIDOutsideCommentRoots(root, uid) {
+    const id = String(uid || '').trim();
+    if (!(root instanceof Element) || !/^\d{5,}$/.test(id)) return false;
+    return getElementsForUID(root, id).some(
+      (el) => !el.closest(DOM_COMMENT_ROOT_SELECTOR)
+    );
+  }
+
+  function getHiddenVirtualItemUID(item) {
+    if (
+      !(item instanceof Element) ||
+      !item.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)
+    ) {
+      return '';
     }
-    item.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
-    item.setAttribute(BLOCKED_CONTENT_UID_ATTR, uid);
-    return true;
+    const uid = String(item.getAttribute(BLOCKED_CONTENT_UID_ATTR) || '').trim();
+    if (!/^\d{5,}$/.test(uid)) return '';
+    if (hasUIDOutsideCommentRoots(item, uid)) return uid;
+
+    // A hidden comment inside this virtual feed item must not collapse the
+    // entire feed item. Clear only the virtual shell marker and keep descendants.
+    clearOwnBlockedContentHideState(item);
+    return '';
+  }
+
+  function isBlockedVirtualItem(item) {
+    return !!getHiddenVirtualItemUID(item);
   }
 
   function readStoredNumber(el, attr) {
@@ -2042,6 +2277,10 @@
   }
 
   function compactVirtualScrollerGaps(root = document) {
+    if (isRelationshipListPage()) {
+      restoreHiddenRelationshipItems(document);
+      return;
+    }
     if (!root || !root.querySelectorAll) return;
     const wrappers = new Set();
 
@@ -2069,20 +2308,18 @@
         .map((item) => {
           const y = getVirtualBaseY(item);
           const index = getVirtualItemIndex(item);
-          const blockedUID = firstBlockedDOMUIDIn(item);
           const hiddenUID = String(
             item.getAttribute(BLOCKED_CONTENT_UID_ATTR) || ''
           ).trim();
-          const hiddenByCurrentMarker =
-            /^\d{5,}$/.test(hiddenUID) && elementHasUID(item, hiddenUID);
+          const hiddenVirtualUID = getHiddenVirtualItemUID(item);
           const view = {
             item,
             index,
             mode: getVirtualLayoutMode(item),
             y,
             x: getTranslateX(item),
-            hidden: !!blockedUID || hiddenByCurrentMarker,
-            hiddenUID: blockedUID || (hiddenByCurrentMarker ? hiddenUID : ''),
+            hidden: !!hiddenVirtualUID,
+            hiddenUID: hiddenVirtualUID || hiddenUID,
             parked: isParkedVirtualItem(item, y),
             slotHeight: 0,
             estimatedY: y,
@@ -2190,13 +2427,16 @@
 
     const url = getProfileURL(source, uid, post);
     if (!url) return null;
+    const root = findContentRootForUID(source, uid);
+    const fallbackRoot =
+      post && !isUnsafePostRootForUID(post, uid) ? post : null;
 
     return {
       uid,
       url,
       name: getUserDisplayName(el, uid, post),
       source,
-      root: findContentRootForUID(source, uid) || post,
+      root: root || fallbackRoot,
     };
   }
 
@@ -2210,8 +2450,13 @@
     } else {
       const post = ctx.root || findContentRootForUID(ctx.source, ctx.uid);
       hideContentRoot(post, ctx.uid);
-      hideBlockedDOMPosts(document);
-      scheduleBlockedDOMRefresh();
+      if (isCommentContentRoot(post)) {
+        const commentList = post.closest('.wbpro-list') || post.parentElement;
+        hideBlockedCommentRoots(commentList || post);
+      } else {
+        hideBlockedDOMPosts(document);
+        scheduleBlockedDOMRefresh();
+      }
     }
 
     if (options.showToast !== false) {
@@ -2506,14 +2751,39 @@
     }
   }
 
+  function hideBlockedCommentRoots(root = document) {
+    if (isRelationshipListPage()) {
+      restoreHiddenRelationshipItems(document);
+      return false;
+    }
+    if (!BL.size || !root || !root.querySelectorAll) return false;
+    const nodes = [];
+    if (root instanceof Element && root.matches(DOM_UID_SELECTOR)) {
+      nodes.push(root);
+    }
+    root.querySelectorAll(DOM_UID_SELECTOR).forEach((el) => nodes.push(el));
+
+    let hiddenAny = false;
+    nodes.forEach((el) => {
+      const blockedUID = [...extractDOMUIDs(el)].find((uid) => BL.has(uid));
+      if (!blockedUID) return;
+      const commentRoot = findCommentRootForUID(el, blockedUID);
+      if (commentRoot && hideContentRoot(commentRoot, blockedUID)) {
+        hiddenAny = true;
+      }
+    });
+    return hiddenAny;
+  }
+
   function hideBlockedDOMPosts(root = document) {
+    syncRelationshipPageMode();
     removeWeiboFloatingVideoPlayers(root || document);
     suppressFloatingVideoPlayers(root || document);
-    if (!BL.size || !root || !root.querySelectorAll) return;
     if (isRelationshipListPage()) {
-      restoreHiddenRelationshipItems(root);
+      restoreHiddenRelationshipItems(document);
       return;
     }
+    if (!BL.size || !root || !root.querySelectorAll) return;
     const nodes = [];
     if (root instanceof Element && root.matches(DOM_UID_SELECTOR)) {
       nodes.push(root);
@@ -2588,7 +2858,8 @@
 
   function isRelevantBlockedLayoutMutationTarget(target) {
     if (!(target instanceof Element)) return false;
-    if (!document.querySelector(BLOCKED_CONTENT_HIDE_SELECTOR)) return false;
+    if (!hasHiddenNonCommentContent(document)) return false;
+    if (isInsideCommentContentRoot(target)) return false;
     if (
       target.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
       target.closest(FLOATING_VIDEO_PLAYER_SELECTOR)
@@ -2639,6 +2910,20 @@
         : '';
 
     const res = await WB_BL_NATIVE.fetch(input, init);
+
+    if (isRelationshipFriendsURL(url)) {
+      try {
+        const data = await res.clone().json();
+        return new Response(
+          JSON.stringify(normalizeRelationshipFriendsData(data)),
+          {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          }
+        );
+      } catch {}
+    }
 
     if (filterUID && (await didFilterRequestSucceed(res))) {
       if (isFilterUserRequest) {
@@ -2735,6 +3020,16 @@
               max_id_str: '0',
             })
           );
+          return;
+        }
+        if (isRelationshipFriendsURL(url)) {
+          try {
+            const data = JSON.parse(this.responseText);
+            defineXHRTextResponse(
+              this,
+              JSON.stringify(normalizeRelationshipFriendsData(data))
+            );
+          } catch {}
           return;
         }
         // 过滤黑名单内容
@@ -2843,7 +3138,12 @@
     const obs = new MutationObserver((ms) => {
       clearTimeout(window._wbbl_t);
       window._wbbl_t = setTimeout(() => {
+        if (isRelationshipListPage()) {
+          restoreHiddenRelationshipItems(document);
+          return;
+        }
         let needsFullRefresh = false;
+        const hasHiddenFeedContent = hasHiddenNonCommentContent(document);
         ms.forEach((m) => {
           if (
             m.type === 'attributes' &&
@@ -2856,7 +3156,11 @@
             if (n instanceof HTMLElement) {
               removeWeiboFloatingVideoPlayers(n);
               suppressFloatingVideoPlayers(n);
-              hideBlockedDOMPosts(n);
+              if (hasHiddenFeedContent) {
+                hideBlockedDOMPosts(n);
+              } else {
+                hideBlockedCommentRoots(n);
+              }
             }
           });
         });
@@ -2875,6 +3179,7 @@
           push.call(this, s, title, url);
           obs.disconnect();
           const nextRoot = document.body || document.documentElement;
+          syncRelationshipPageMode();
           hideBlockedDOMPosts(nextRoot);
           obs.observe(nextRoot, observeOptions);
         };
@@ -3007,7 +3312,7 @@
     const uids = Array.from(blSet);
     const exportData = {
       exportTime: new Date().toISOString(),
-      version: '1.2.0',
+      version: '1.2.1',
       scriptName: 'Weibo Retro Twitter-Style Clone',
       count: uids.length,
       uids: uids,
