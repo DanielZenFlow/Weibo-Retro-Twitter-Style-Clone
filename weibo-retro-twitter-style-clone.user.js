@@ -2,7 +2,7 @@
 // @sandbox      raw
 // @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.2.1
+// @version      1.2.2
 // @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
@@ -31,7 +31,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.2.1';
+  const SCRIPT_VERSION = '1.2.2';
 
   // === GM_* 接口封装 ===
   const _GM_getValue =
@@ -323,6 +323,8 @@
   ].join(',');
   const COMPACTED_VIRTUAL_ITEM_ATTR = 'data-__wb_compacted_virtual_item';
   const COMPACTED_TOP_ITEM_ATTR = 'data-__wb_compacted_top_item';
+  const NATIVE_HIDDEN_VIRTUAL_GAP_ATTR =
+    'data-__wb_native_hidden_virtual_gap';
   const COMPACTED_VIRTUAL_WRAPPER_ATTR =
     'data-__wb_compacted_virtual_wrapper';
   const ORIGINAL_TRANSLATE_Y_ATTR = 'data-__wb_original_translate_y';
@@ -2022,6 +2024,55 @@
     return y <= -9000 || /translateY\(\s*-9999px\s*\)/i.test(transform);
   }
 
+  function isNativeHiddenVirtualGap(item, y = null) {
+    if (!(item instanceof Element) || !item.matches(VIRTUAL_VIEW_SELECTOR)) {
+      return false;
+    }
+    if (item.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)) return false;
+
+    const style = getComputedStyle(item);
+    if (style.display !== 'none') return false;
+
+    const baseY = y === null ? getVirtualBaseY(item) : y;
+    if (!Number.isFinite(baseY) || isParkedVirtualItem(item, baseY)) {
+      return false;
+    }
+
+    const text = normDOMText(item.textContent);
+    if (!text) return false;
+
+    const wrapper = item.closest(VIRTUAL_WRAPPER_SELECTOR);
+    if (!wrapper) return false;
+
+    let parent = item.parentElement;
+    while (parent && parent !== wrapper) {
+      if (getComputedStyle(parent).display === 'none') return false;
+      parent = parent.parentElement;
+    }
+    if (getComputedStyle(wrapper).display === 'none') return false;
+
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const expectedTop = wrapperRect.top + baseY;
+    const viewport = Math.max(window.innerHeight || 0, 1);
+    return expectedTop > -viewport && expectedTop < viewport * 2;
+  }
+
+  function hasNativeHiddenVirtualGaps(root = document) {
+    if (!root || !root.querySelectorAll) return false;
+    const items = [];
+    if (root instanceof Element) {
+      if (root.matches(VIRTUAL_VIEW_SELECTOR)) items.push(root);
+      root
+        .querySelectorAll(VIRTUAL_VIEW_SELECTOR)
+        .forEach((item) => items.push(item));
+    } else {
+      root
+        .querySelectorAll(VIRTUAL_VIEW_SELECTOR)
+        .forEach((item) => items.push(item));
+    }
+    return items.some((item) => isNativeHiddenVirtualGap(item));
+  }
+
   function hasUIDOutsideCommentRoots(root, uid) {
     const id = String(uid || '').trim();
     if (!(root instanceof Element) || !/^\d{5,}$/.test(id)) return false;
@@ -2112,6 +2163,7 @@
     if (!(item instanceof Element)) return;
     item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
     item.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
+    item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
     item.style.removeProperty('--wb-bl-compact-y');
     item.style.removeProperty('--wb-bl-compact-x');
     item.style.removeProperty('--wb-bl-compact-top');
@@ -2208,6 +2260,7 @@
     const selector = [
       `[${COMPACTED_VIRTUAL_ITEM_ATTR}]`,
       `[${COMPACTED_TOP_ITEM_ATTR}]`,
+      `[${NATIVE_HIDDEN_VIRTUAL_GAP_ATTR}]`,
       `[${COMPACTED_VIRTUAL_WRAPPER_ATTR}]`,
       `[${ORIGINAL_LAYOUT_MODE_ATTR}]`,
       `[${ORIGINAL_TRANSLATE_Y_ATTR}]`,
@@ -2224,6 +2277,7 @@
     Array.from(new Set(nodes)).forEach((node) => {
       node.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
       node.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
+      node.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
       node.removeAttribute(COMPACTED_VIRTUAL_WRAPPER_ATTR);
       node.removeAttribute(ORIGINAL_LAYOUT_MODE_ATTR);
       node.removeAttribute(ORIGINAL_TRANSLATE_Y_ATTR);
@@ -2264,6 +2318,7 @@
 
   function applyVirtualItemCompaction(item, x, y, mode) {
     if (!(item instanceof Element)) return;
+    item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
     if (mode === 'top') {
       item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
       item.setAttribute(COMPACTED_TOP_ITEM_ATTR, '1');
@@ -2307,19 +2362,27 @@
         )
         .map((item) => {
           const y = getVirtualBaseY(item);
-          const index = getVirtualItemIndex(item);
+          const rawIndex = getVirtualItemIndex(item);
+          const index =
+            rawIndex !== null
+              ? rawIndex
+              : Number.isFinite(y)
+                ? y
+                : null;
           const hiddenUID = String(
             item.getAttribute(BLOCKED_CONTENT_UID_ATTR) || ''
           ).trim();
           const hiddenVirtualUID = getHiddenVirtualItemUID(item);
+          const nativeHiddenGap = isNativeHiddenVirtualGap(item, y);
           const view = {
             item,
             index,
             mode: getVirtualLayoutMode(item),
             y,
             x: getTranslateX(item),
-            hidden: !!hiddenVirtualUID,
+            hidden: !!hiddenVirtualUID || nativeHiddenGap,
             hiddenUID: hiddenVirtualUID || hiddenUID,
+            nativeHiddenGap,
             parked: isParkedVirtualItem(item, y),
             slotHeight: 0,
             estimatedY: y,
@@ -2376,19 +2439,27 @@
       views.forEach((view) => {
         if (view.hidden) {
           view.item.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
-          if (view.hiddenUID) {
+          if (view.nativeHiddenGap && !view.hiddenUID) {
+            view.item.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
+            view.item.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
+            view.item.setAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR, '1');
+          } else if (view.hiddenUID) {
             view.item.setAttribute(BLOCKED_CONTENT_UID_ATTR, view.hiddenUID);
           }
           view.item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
           view.item.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
-          setImportantStyleIfNeeded(view.item, 'display', 'none');
-          setImportantStyleIfNeeded(view.item, 'height', '0px');
-          setImportantStyleIfNeeded(view.item, 'min-height', '0px');
-          setImportantStyleIfNeeded(view.item, 'margin', '0px');
-          setImportantStyleIfNeeded(view.item, 'padding', '0px');
+          if (!view.nativeHiddenGap || view.hiddenUID) {
+            view.item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
+            setImportantStyleIfNeeded(view.item, 'display', 'none');
+            setImportantStyleIfNeeded(view.item, 'height', '0px');
+            setImportantStyleIfNeeded(view.item, 'min-height', '0px');
+            setImportantStyleIfNeeded(view.item, 'margin', '0px');
+            setImportantStyleIfNeeded(view.item, 'padding', '0px');
+          }
           return;
         }
 
+        view.item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
         clearBlockedContentHideState(view.item);
         const removedBefore = sumHiddenSlotHeights(state, view.index);
         if (removedBefore > 0) {
@@ -2779,11 +2850,15 @@
     syncRelationshipPageMode();
     removeWeiboFloatingVideoPlayers(root || document);
     suppressFloatingVideoPlayers(root || document);
+    if (!root || !root.querySelectorAll) return;
     if (isRelationshipListPage()) {
       restoreHiddenRelationshipItems(document);
       return;
     }
-    if (!BL.size || !root || !root.querySelectorAll) return;
+    if (!BL.size) {
+      compactVirtualScrollerGaps(root);
+      return;
+    }
     const nodes = [];
     if (root instanceof Element && root.matches(DOM_UID_SELECTOR)) {
       nodes.push(root);
@@ -2856,9 +2931,26 @@
     setTimeout(run, 1600);
   }
 
+  let nativeVirtualGapRefreshFrame = 0;
+  function refreshNativeVirtualGapsOnScroll() {
+    if (nativeVirtualGapRefreshFrame) return;
+    nativeVirtualGapRefreshFrame = requestAnimationFrame(() => {
+      nativeVirtualGapRefreshFrame = 0;
+      if (isRelationshipListPage()) return;
+      if (hasNativeHiddenVirtualGaps(document)) {
+        compactVirtualScrollerGaps(document);
+      }
+    });
+  }
+
   function isRelevantBlockedLayoutMutationTarget(target) {
     if (!(target instanceof Element)) return false;
-    if (!hasHiddenNonCommentContent(document)) return false;
+    if (
+      !hasHiddenNonCommentContent(document) &&
+      !hasNativeHiddenVirtualGaps(document)
+    ) {
+      return false;
+    }
     if (isInsideCommentContentRoot(target)) return false;
     if (
       target.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
@@ -3144,6 +3236,7 @@
         }
         let needsFullRefresh = false;
         const hasHiddenFeedContent = hasHiddenNonCommentContent(document);
+        const hasNativeHiddenGap = hasNativeHiddenVirtualGaps(document);
         ms.forEach((m) => {
           if (
             m.type === 'attributes' &&
@@ -3156,8 +3249,8 @@
             if (n instanceof HTMLElement) {
               removeWeiboFloatingVideoPlayers(n);
               suppressFloatingVideoPlayers(n);
-              if (hasHiddenFeedContent) {
-                hideBlockedDOMPosts(n);
+              if (hasHiddenFeedContent || hasNativeHiddenGap) {
+                hideBlockedDOMPosts(hasNativeHiddenGap ? document : n);
               } else {
                 hideBlockedCommentRoots(n);
               }
@@ -3189,6 +3282,14 @@
     };
     attach();
   })();
+
+  window.addEventListener('scroll', refreshNativeVirtualGapsOnScroll, {
+    passive: true,
+  });
+  document.addEventListener('scroll', refreshNativeVirtualGapsOnScroll, {
+    passive: true,
+    capture: true,
+  });
 
   initUserContextMenu();
 
@@ -3240,6 +3341,7 @@
     hideFollowRecommendations: true,
     hideCommonFunctions: true,
     hideFanGroups: true,
+    hideFrequentSuperTopics: true,
     hideNavVideo: false,
     hideNavRecommend: false,
     hideNavGame: true,
@@ -3312,7 +3414,7 @@
     const uids = Array.from(blSet);
     const exportData = {
       exportTime: new Date().toISOString(),
-      version: '1.2.1',
+      version: '1.2.2',
       scriptName: 'Weibo Retro Twitter-Style Clone',
       count: uids.length,
       uids: uids,
@@ -3460,6 +3562,9 @@
     if (CFG.hideFollowRecommendations) t.push('关注推荐');
     if (CFG.hideCommonFunctions) t.push('常用功能');
     if (CFG.hideFanGroups) t.push('粉丝群');
+    if (CFG.hideFrequentSuperTopics) {
+      t.push('经常访问的超话', '经常访问超话');
+    }
     return new Set(t);
   }
   function findSectionRootFromHeading(h) {
@@ -3722,7 +3827,7 @@
 
     const BLOCK_TITLES = buildBlockTitles();
     const headings = root.querySelectorAll(
-      '.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex'
+      '.wbpro-side-tit .cla, [class*="cardHotSearch_tit_"] .cla, .wbpro-side .f16.fm.cla, .wbpro-side-tit .woo-box-item-flex, .wbpro-side [class*="_topicTitleText_"], .wbpro-side [class*="topicTitleText"]'
     );
     headings.forEach((h) => {
       const text = normText(h.textContent);
@@ -3988,6 +4093,7 @@
               <label class="wbset-row"><input type="checkbox" id="wbset-follow-rec"> 隐藏：关注推荐</label>
               <label class="wbset-row"><input type="checkbox" id="wbset-common-functions"> 隐藏：常用功能</label>
               <label class="wbset-row"><input type="checkbox" id="wbset-fan-groups"> 隐藏：粉丝群</label>
+              <label class="wbset-row"><input type="checkbox" id="wbset-frequent-supertopics"> 隐藏：经常访问的超话</label>
               <div class="wbset-row wbset-note">说明：仅影响侧栏版块的显示，不改动你的黑名单数据。</div>
             </div>
             <div class="wbset-sec">
@@ -4091,6 +4197,9 @@
       const $followRec = panel.querySelector('#wbset-follow-rec');
       const $commonFunctions = panel.querySelector('#wbset-common-functions');
       const $fanGroups = panel.querySelector('#wbset-fan-groups');
+      const $frequentSuperTopics = panel.querySelector(
+        '#wbset-frequent-supertopics'
+      );
       const $latest = panel.querySelector('#wbset-latest');
       const $navVideo = panel.querySelector('#wbset-nav-video');
       const $navRecommend = panel.querySelector('#wbset-nav-recommend');
@@ -4104,6 +4213,8 @@
         $followRec.checked = CFG.hideFollowRecommendations !== false;
         $commonFunctions.checked = CFG.hideCommonFunctions !== false;
         $fanGroups.checked = CFG.hideFanGroups !== false;
+        $frequentSuperTopics.checked =
+          CFG.hideFrequentSuperTopics !== false;
         $latest.checked = CFG.defaultLatestTimeline !== false; // 默认true
         $navVideo.checked = !!CFG.hideNavVideo;
         $navRecommend.checked = !!CFG.hideNavRecommend;
@@ -4261,6 +4372,7 @@
         CFG.hideFollowRecommendations = $followRec.checked;
         CFG.hideCommonFunctions = $commonFunctions.checked;
         CFG.hideFanGroups = $fanGroups.checked;
+        CFG.hideFrequentSuperTopics = $frequentSuperTopics.checked;
         CFG.defaultLatestTimeline = $latest.checked;
         CFG.hideNavVideo = $navVideo.checked;
         CFG.hideNavRecommend = $navRecommend.checked;
