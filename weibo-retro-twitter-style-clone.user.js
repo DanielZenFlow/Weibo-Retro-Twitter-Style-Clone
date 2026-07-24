@@ -2,8 +2,8 @@
 // @sandbox      raw
 // @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
-// @version      1.2.2
-// @description  增强版：模仿早期Twitter的时间线展示。自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；永久屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
+// @version      2.0.0
+// @description  增强版：模仿早期Twitter的时间线展示。可自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；时间线恢复启用时屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
 // @author       DanielZenFlow
 // @license      MIT
 // @homepage     https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone
@@ -31,7 +31,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.2.2';
+  const SCRIPT_VERSION = '2.0.0';
 
   // === GM_* 接口封装 ===
   const _GM_getValue =
@@ -227,7 +227,7 @@
   };
 
   // === 强制切换到"最新微博"分栏 ===
-  // 策略：1. API层面劫持，将默认推荐流替换为时间线流
+  // 策略：1. 启用时屏蔽"全部关注"接口
   //       2. DOM层面同步Tab选中状态
   (function forceLatestTab() {
     if (!timelineDefault.value) return;
@@ -309,9 +309,30 @@
 
   // === 黑名单数据与同步 ===
   const UID_KEY = 'WB_BL_list'; // 本地存 UID
+  const OFFICIAL_BLOCK_REQUEST_KEY = 'WB_BL_official_block_request';
+  const OFFICIAL_BLOCK_RESPONSE_KEY = 'WB_BL_official_block_response';
+  const OFFICIAL_BLOCK_RELAY_PARAM = 'wb_retro_official_block';
+  const OFFICIAL_BLOCK_RELAY_TIMEOUT_MS = 15000;
+  const CONTENT_FILTER_DEFAULTS = {
+    hideBlacklistPosts: true,
+    hideBlacklistComments: true,
+    hideBlacklistSearchResults: true,
+    hideBlacklistUserCards: true,
+    hideBlacklistInteractions: true,
+    hideAds: true,
+  };
+  const CONTENT_FILTER_CFG = (() => {
+    let cfg = {};
+    try {
+      cfg = JSON.parse(_GM_getValue('cfg', '{}') || '{}');
+    } catch {}
+    return Object.assign({}, CONTENT_FILTER_DEFAULTS, cfg);
+  })();
   const BLOCKED_CONTENT_HIDE_ATTR = 'data-__wb_bl_hidden_by_userscript';
   const BLOCKED_CONTENT_UID_ATTR = 'data-__wb_bl_hidden_uid';
   const BLOCKED_CONTENT_HIDE_SELECTOR = `[${BLOCKED_CONTENT_HIDE_ATTR}]`;
+  const HIDDEN_AD_ATTR = 'data-__wb_ad_hidden_by_userscript';
+  const HIDDEN_AD_SELECTOR = `[${HIDDEN_AD_ATTR}]`;
   const RELATIONSHIP_PAGE_ATTR = 'data-__wb_relationship_list_page';
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
   const FLOATING_VIDEO_PLAYER_SELECTOR = [
@@ -320,6 +341,28 @@
     '[class*="miniPlayer"]',
     '[class*="MiniPlayer"]',
     '[class*="_miniPlayer_"]',
+  ].join(',');
+  const EXPLICIT_AD_SELECTOR = [
+    '[data-ad-id]',
+    '[data-adid]',
+    '[ad-id]',
+    '[adid]',
+    '[data-ad="true"]',
+    '[data-is-ad="true"]',
+    '[is-ad="true"]',
+    '[feedtype="ad"]',
+    '[mblogtype="ad"]',
+    '[action-type*="feed_ad"]',
+    '[action-type*="advert"]',
+    '[node-type*="feed_ad"]',
+    '[node-type*="advert"]',
+    '[class*="feed-ad"]',
+    '[class*="feed_ad"]',
+    '[class*="FeedAd"]',
+    '[class*="advert"]',
+    '[class*="Advert"]',
+    '[class*="promoted"]',
+    '[class*="Promoted"]',
   ].join(',');
   const COMPACTED_VIRTUAL_ITEM_ATTR = 'data-__wb_compacted_virtual_item';
   const COMPACTED_TOP_ITEM_ATTR = 'data-__wb_compacted_top_item';
@@ -608,6 +651,7 @@
       restoreHidden: false,
       nudgeLayout: false,
     });
+    scheduleBlockedDOMRefreshWhenPageReady();
 
     // 检查首次运行和Star提醒
     checkFirstRun();
@@ -691,6 +735,15 @@
         border: 0 !important;
         overflow: hidden !important;
       }
+      ${HIDDEN_AD_SELECTOR} {
+        display: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        overflow: hidden !important;
+      }
       html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR} {
         display: revert !important;
         height: auto !important;
@@ -727,6 +780,21 @@
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
+      }
+      /* 首页有新微博时，将红色 NEW 胶囊替换为圆点 */
+      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) {
+        min-width: var(--w-badge-dot, .625rem) !important;
+        width: var(--w-badge-dot, .625rem) !important;
+        height: var(--w-badge-dot, .625rem) !important;
+        padding: 0 !important;
+        border-radius: 50% !important;
+        line-height: 0 !important;
+        top: 0 !important;
+        right: 0 !important;
+        transform: translate(50%, -50%) !important;
+      }
+      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) .woo-badge-new {
+        display: none !important;
       }
       div[role="link"][title="全部关注"] { display: none !important; }
       .Links_box_17T3k { display: none !important; }
@@ -845,6 +913,114 @@
     return out;
   }
 
+  function hasExplicitAdMarker(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+    const truthyAdFlag = ['is_ad', 'isAd', 'is_ads', 'is_advert'].some(
+      (key) =>
+        obj[key] === true ||
+        obj[key] === 1 ||
+        String(obj[key] || '').toLowerCase() === 'true'
+    );
+    if (truthyAdFlag) return true;
+
+    const adState = Number(obj.ad_state ?? obj.adState);
+    if (Number.isFinite(adState) && adState > 0) return true;
+
+    const hasAdID = ['ad_id', 'adid', 'adId'].some((key) => {
+      const value = obj[key];
+      return value !== undefined && value !== null && String(value).trim() !== '';
+    });
+    if (hasAdID) return true;
+
+    if (
+      obj.ad_info ||
+      obj.adInfo ||
+      obj.ad_data ||
+      obj.adData ||
+      obj.promote_info ||
+      obj.promoteInfo ||
+      obj.advertise_info ||
+      obj.advertiseInfo
+    ) {
+      return true;
+    }
+
+    return ['mblog', 'status'].some((key) => {
+      const nested = obj[key];
+      return (
+        nested &&
+        typeof nested === 'object' &&
+        !Array.isArray(nested) &&
+        hasExplicitAdMarker(nested)
+      );
+    });
+  }
+
+  function filterAdsFromData(obj, seen = new WeakMap(), depth = 0) {
+    if (!CONTENT_FILTER_CFG.hideAds) return obj;
+    if (!obj || typeof obj !== 'object') return obj;
+    if (depth > MAX_FILTER_DEPTH) return obj;
+    if (seen.has(obj)) return seen.get(obj);
+
+    if (Array.isArray(obj)) {
+      const out = [];
+      seen.set(obj, out);
+      obj.forEach((item) => {
+        if (hasExplicitAdMarker(item)) return;
+        out.push(filterAdsFromData(item, seen, depth + 1));
+      });
+      return out;
+    }
+
+    const out = {};
+    seen.set(obj, out);
+    for (const [key, value] of Object.entries(obj)) {
+      out[key] =
+        value && typeof value === 'object'
+          ? filterAdsFromData(value, seen, depth + 1)
+          : value;
+    }
+    return out;
+  }
+
+  function isFilterableContentURL(url) {
+    return (
+      typeof url === 'string' &&
+      /\/(?:ajax\/(?:feed|statuses|comment|getCommentList|repost|like)|graphql\/|(?:mymblog|timeline|index))/.test(
+        url
+      )
+    );
+  }
+
+  function shouldFilterBlacklistResponse(url) {
+    if (isRelationshipListPage()) return false;
+    if (isWeiboSearchResultPage()) {
+      return CONTENT_FILTER_CFG.hideBlacklistSearchResults;
+    }
+    if (
+      /\/ajax\/(?:comment|getCommentList)|\/ajax\/statuses\/(?:buildComments|comment|reply)/i.test(
+        url
+      )
+    ) {
+      return CONTENT_FILTER_CFG.hideBlacklistComments;
+    }
+    if (
+      /\/ajax\/(?:repost|like)|\/ajax\/statuses\/(?:repost|like)/i.test(url)
+    ) {
+      return CONTENT_FILTER_CFG.hideBlacklistInteractions;
+    }
+    return CONTENT_FILTER_CFG.hideBlacklistPosts;
+  }
+
+  function filterContentResponseData(data, url = '') {
+    let result = data;
+    if (CONTENT_FILTER_CFG.hideAds) result = filterAdsFromData(result);
+    if (shouldFilterBlacklistResponse(String(url || ''))) {
+      result = filterData(result);
+    }
+    return result;
+  }
+
   function isRelationshipFriendsURL(url) {
     return (
       typeof url === 'string' &&
@@ -868,6 +1044,8 @@
 
   const DOM_UID_SELECTOR = [
     '[data-user-id]',
+    '[data-user-card]',
+    '[data-usercard-mid]',
     '[data-uid]',
     '[uid]',
     '[usercard]',
@@ -996,6 +1174,8 @@
   }
   const USER_CONTEXT_TARGET_SELECTOR = [
     '[data-user-id]',
+    '[data-user-card]',
+    '[data-usercard-mid]',
     '[data-uid]',
     '[uid]',
     '[usercard]',
@@ -1010,6 +1190,63 @@
     'a[href*="//weibo.com/p/100505"]',
     'a[href*="//weibo.com/n/"]',
   ].join(',');
+  const USER_CONTEXT_NAME_TARGET_SELECTOR = [
+    '.card-feed .content > .info a.name[href]',
+    '.content > .info a.name[nick-name][href]',
+    '.card-user-c a.name[href]',
+    '.card-user-b a.name[href]',
+    'a.name[nick-name][href]',
+    'a[nick-name][href]',
+    'a[href][class*="_name_"]',
+    '[class*="_name_"][data-user-id]',
+    '[class*="_name_"][data-uid]',
+    '[class*="_name_"][usercard]',
+    '[class*="_name_"][data-user-card]',
+    '[class*="_name_"][data-usercard]',
+    'main [class*="_name_"]',
+  ].join(',');
+
+  function getUserNameLabel(el) {
+    if (!(el instanceof Element)) return '';
+    const directLabel = cleanUserDisplayName(
+      getNameFromElementAttributes(el) || getOwnDOMText(el)
+    );
+    if (directLabel) return directLabel;
+
+    // 新版首页/分组时间线会把用户名放在
+    // <a class="..._name_..."><span title="用户名">用户名</span></a> 中。
+    const labelledChild = el.querySelector(
+      ':scope > [title], :scope > [aria-label]'
+    );
+    if (!(labelledChild instanceof Element)) {
+      return cleanUserDisplayName(el.textContent);
+    }
+    return cleanUserDisplayName(
+      getNameFromElementAttributes(labelledChild) ||
+        getOwnDOMText(labelledChild) ||
+        labelledChild.textContent ||
+        el.textContent
+    );
+  }
+
+  function getUserNameContextTarget(target) {
+    const el =
+      target instanceof Element ? target : target?.parentElement || null;
+    if (!el) return null;
+    const candidate = el.closest(USER_CONTEXT_NAME_TARGET_SELECTOR);
+    if (!(candidate instanceof Element)) return null;
+
+    const label = getUserNameLabel(candidate);
+    if (!label) return null;
+    if (
+      candidate.matches('a') &&
+      !candidate.getAttribute('href') &&
+      !firstDOMUID(candidate)
+    ) {
+      return null;
+    }
+    return candidate;
+  }
 
   function extractDOMUIDs(el) {
     const uids = new Set();
@@ -1025,12 +1262,13 @@
     };
 
     addDirectUID(el.getAttribute('data-user-id'));
+    addDirectUID(el.getAttribute('data-usercard-mid'));
     addDirectUID(el.getAttribute('data-uid'));
     addDirectUID(el.getAttribute('uid'));
     addDirectUID(el.getAttribute('usercard'));
     addDirectUID(el.getAttribute('data-usercard'));
 
-    ['usercard', 'data-usercard'].forEach((attr) => {
+    ['usercard', 'data-user-card', 'data-usercard'].forEach((attr) => {
       const value = el.getAttribute(attr);
       addMatches(value, /(?:^|[?&#;\s])id=(\d{5,})/g);
       addMatches(
@@ -1042,6 +1280,7 @@
     [
       'usercard',
       'data-usercard',
+      'data-user-card',
       'action-data',
       'tbinfo',
       'suda-data',
@@ -1160,6 +1399,12 @@
     '取消关注',
     '粉丝',
     '微博',
+    '转发',
+    '评论',
+    '赞',
+    '收藏',
+    '分享',
+    '举报',
   ]);
 
   function cleanUserDisplayName(text) {
@@ -1176,18 +1421,17 @@
 
   function getElementsForUID(root, uid) {
     if (!(root instanceof Element) || !uid) return [];
-    const selector = [
-      `[data-user-id="${uid}"]`,
-      `[data-uid="${uid}"]`,
-      `[uid="${uid}"]`,
-      `[usercard="${uid}"]`,
-      `[data-usercard="${uid}"]`,
-      `a[href*="/u/${uid}"]`,
-      `a[href*="/p/100505${uid}"]`,
-    ].join(',');
     const elements = [];
-    if (root.matches(selector)) elements.push(root);
-    root.querySelectorAll(selector).forEach((item) => elements.push(item));
+    const collect = (item) => {
+      if (
+        item instanceof Element &&
+        extractDOMUIDs(item).has(String(uid))
+      ) {
+        elements.push(item);
+      }
+    };
+    collect(root);
+    root.querySelectorAll(DOM_UID_SELECTOR).forEach(collect);
     return elements;
   }
 
@@ -1503,6 +1747,13 @@
 
   function findCommentRootForUID(el, uid) {
     if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
+      return null;
+    }
+    if (
+      el.closest(
+        '.card-user-b, .card-user-c, [class*="UserCard"], [class*="user-card"], [class*="user_card"]'
+      )
+    ) {
       return null;
     }
     const explicit = el.closest(DOM_COMMENT_ROOT_SELECTOR);
@@ -2484,19 +2735,359 @@
     });
   }
 
+  function isWeiboSearchResultPage() {
+    return (
+      location.hostname === 's.weibo.com' &&
+      /^\/weibo(?:\/|$)/.test(location.pathname)
+    );
+  }
+
+  const SEARCH_RESULT_CARD_SELECTOR = [
+    '.card-wrap[action-type="feed_list_item"]',
+    '.card-wrap[mid]',
+  ].join(',');
+  const SEARCH_RESULT_AUTHOR_SELECTOR = [
+    '.card-feed .content > .info a.name[href]',
+    '.card-feed .content > .info [nick-name]',
+    '.card-feed .avator a[href]',
+    '.card-feed .avatar a[href]',
+    '.content > .info a.name[href]',
+  ].join(',');
+
+  function getBlacklistDOMCategory(root) {
+    if (!(root instanceof Element)) return 'posts';
+    if (
+      isWeiboSearchResultPage() &&
+      root.closest('.card-wrap') &&
+      !root.closest(SEARCH_RESULT_CARD_SELECTOR)
+    ) {
+      return 'userCards';
+    }
+    if (isCommentContentRoot(root) || isInsideCommentContentRoot(root)) {
+      return 'comments';
+    }
+    if (
+      isWeiboSearchResultPage() &&
+      root.closest(SEARCH_RESULT_CARD_SELECTOR)
+    ) {
+      return 'searchResults';
+    }
+    if (isPostContentRoot(root) || root.closest(DOM_POST_ROOT_SELECTOR)) {
+      return 'posts';
+    }
+    return 'userCards';
+  }
+
+  function shouldHideBlacklistDOMRoot(root) {
+    const category = getBlacklistDOMCategory(root);
+    if (category === 'comments') {
+      return CONTENT_FILTER_CFG.hideBlacklistComments;
+    }
+    if (category === 'searchResults') {
+      return CONTENT_FILTER_CFG.hideBlacklistSearchResults;
+    }
+    if (category === 'userCards') {
+      return CONTENT_FILTER_CFG.hideBlacklistUserCards;
+    }
+    return CONTENT_FILTER_CFG.hideBlacklistPosts;
+  }
+
+  function findExplicitAdRoot(marker) {
+    if (!(marker instanceof Element)) return null;
+    return (
+      marker.closest(
+        [
+          'article',
+          '.card-wrap[action-type="feed_list_item"]',
+          '.card-wrap[mid]',
+          '[action-type="feed_list_item"]',
+          '[node-type="feed_list_item"]',
+          '[class*="Feed_wrap_"]',
+          '[class*="Feed_card_"]',
+        ].join(',')
+      ) || marker
+    );
+  }
+
+  function hasExplicitAdLabel(root) {
+    if (!(root instanceof Element)) return false;
+    const labels = root.querySelectorAll(
+      [
+        '[class*="ad-label"]',
+        '[class*="ad_label"]',
+        '[class*="AdLabel"]',
+        '[class*="advert"]',
+        '[class*="Advert"]',
+        '[class*="promoted"]',
+        '[class*="Promoted"]',
+        'span',
+        'a',
+      ].join(',')
+    );
+    return Array.from(labels).some((label) =>
+      /^(?:广告|推广|赞助)$/.test(normDOMText(label.textContent))
+    );
+  }
+
+  function hideRecognizedAds(root = document) {
+    if (
+      !CONTENT_FILTER_CFG.hideAds ||
+      !root ||
+      !root.querySelectorAll
+    ) {
+      return false;
+    }
+
+    const markers = new Set();
+    if (root instanceof Element) {
+      if (root.matches(EXPLICIT_AD_SELECTOR)) markers.add(root);
+      const containing = root.closest(EXPLICIT_AD_SELECTOR);
+      if (containing) markers.add(containing);
+    }
+    root
+      .querySelectorAll(EXPLICIT_AD_SELECTOR)
+      .forEach((marker) => markers.add(marker));
+
+    const contentRoots = new Set();
+    const addContentRoot = (item) => {
+      const adRoot = findExplicitAdRoot(item);
+      if (adRoot) contentRoots.add(adRoot);
+    };
+    markers.forEach(addContentRoot);
+
+    const candidates = [];
+    if (
+      root instanceof Element &&
+      root.matches(DOM_POST_ROOT_SELECTOR)
+    ) {
+      candidates.push(root);
+    }
+    root
+      .querySelectorAll(DOM_POST_ROOT_SELECTOR)
+      .forEach((item) => candidates.push(item));
+    candidates.forEach((item) => {
+      if (hasExplicitAdLabel(item)) contentRoots.add(item);
+    });
+
+    let hiddenAny = false;
+    contentRoots.forEach((adRoot) => {
+      const target = findHideShell(adRoot);
+      if (
+        !(target instanceof Element) ||
+        target.hasAttribute(HIDDEN_AD_ATTR)
+      ) {
+        return;
+      }
+      rememberVirtualItemSlotHeight(target);
+      pauseVideosIn(target);
+      target.setAttribute(HIDDEN_AD_ATTR, '1');
+      hiddenAny = true;
+    });
+    return hiddenAny;
+  }
+
+  function hideBlockedSearchResultCards(root = document) {
+    if (
+      !isWeiboSearchResultPage() ||
+      !CONTENT_FILTER_CFG.hideBlacklistSearchResults ||
+      !BL.size ||
+      !root ||
+      !root.querySelectorAll
+    ) {
+      return false;
+    }
+
+    const cards = new Set();
+    if (root instanceof Element) {
+      if (root.matches(SEARCH_RESULT_CARD_SELECTOR)) cards.add(root);
+      const containingCard = root.closest(SEARCH_RESULT_CARD_SELECTOR);
+      if (containingCard) cards.add(containingCard);
+    }
+    root
+      .querySelectorAll(SEARCH_RESULT_CARD_SELECTOR)
+      .forEach((card) => cards.add(card));
+
+    let hiddenAny = false;
+    cards.forEach((card) => {
+      if (card.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)) return;
+      const author = card.querySelector(SEARCH_RESULT_AUTHOR_SELECTOR);
+      const uid = firstDOMUID(author);
+      if (!uid || !BL.has(uid)) return;
+      if (hideContentRoot(card, uid)) hiddenAny = true;
+    });
+    return hiddenAny;
+  }
+
+  function initSearchResultBlacklistFilter() {
+    if (!isWeiboSearchResultPage()) return;
+
+    let refreshTimer = 0;
+    const run = () => {
+      refreshTimer = 0;
+      hideBlockedSearchResultCards(document);
+    };
+    const schedule = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(run, 40);
+    };
+    const observer = new MutationObserver(schedule);
+    const attach = () => {
+      const root = document.body || document.documentElement;
+      if (!root) {
+        setTimeout(attach, 50);
+        return;
+      }
+      observer.observe(root, { childList: true, subtree: true });
+      run();
+    };
+
+    attach();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', run, { once: true });
+    }
+    window.addEventListener('load', run, { once: true });
+    setTimeout(run, 250);
+    setTimeout(run, 1000);
+    setTimeout(run, 2500);
+    window.addEventListener('beforeunload', () => observer.disconnect(), {
+      once: true,
+    });
+  }
+
+  function getSearchResultUserContext(el) {
+    if (!(el instanceof Element) || !isWeiboSearchResultPage()) return null;
+
+    const card = el.closest(
+      '.card-wrap[action-type="feed_list_item"], .card-wrap[mid], .card-wrap'
+    );
+    if (!card) return null;
+
+    const buildContext = (source, nameSource = source) => {
+      if (!(source instanceof Element)) return null;
+      const uid = firstDOMUID(source);
+      if (!uid) return null;
+
+      const explicitName = cleanUserDisplayName(
+        getNameFromElementAttributes(nameSource) || getOwnDOMText(nameSource)
+      );
+      const name =
+        explicitName || getUserDisplayName(nameSource || source, uid, card);
+      const url = getProfileURL(nameSource || source, uid, card);
+      if (!url) return null;
+
+      return {
+        uid,
+        url,
+        name,
+        source,
+        root: card,
+      };
+    };
+
+    // 点击的元素本身明确属于某个用户时优先使用它，但绝不从转发/评论操作区取 UID。
+    const directNameSource = getUserNameContextTarget(el);
+    if (directNameSource && card.contains(directNameSource)) {
+      const directNameContext = buildContext(
+        directNameSource,
+        directNameSource
+      );
+      if (directNameContext) return directNameContext;
+    }
+
+    const directSource = el.closest(
+      [
+        '[data-user-id]',
+        '[data-user-card]',
+        '[data-usercard-mid]',
+        '[data-uid]',
+        '[uid]',
+        '[usercard]',
+        '[data-usercard]',
+        '[nick-name]',
+        'a[href*="/u/"]',
+        'a[href*="/p/100505"]',
+        'a[href*="/n/"]',
+      ].join(',')
+    );
+    if (directSource && card.contains(directSource)) {
+      const directContext = buildContext(directSource, directSource);
+      if (directContext) return directContext;
+    }
+
+    // 搜索卡片头像常常不带 UID；此时从卡片头部主作者区域解析，避开底部“转发”按钮。
+    const feed =
+      Array.from(card.children).find((child) =>
+        child.matches?.('.card-feed')
+      ) ||
+      card.querySelector('.card-feed') ||
+      card;
+    const nameSource = feed.querySelector(
+      [
+        '.content > .info a.name',
+        '.content > .info [nick-name]',
+        'a.name[nick-name]',
+        '[nick-name][usercard]',
+        '[nick-name][data-user-card]',
+        '[nick-name][data-usercard]',
+      ].join(',')
+    );
+    const avatarSource = feed.querySelector(
+      [
+        '.avator [usercard]',
+        '.avator [data-user-card]',
+        '.avator [data-usercard]',
+        '.avator [data-user-id]',
+        '.avator [data-uid]',
+        '.avatar [usercard]',
+        '.avatar [data-user-card]',
+        '.avatar [data-usercard]',
+        '.avatar [data-user-id]',
+        '.avatar [data-uid]',
+      ].join(',')
+    );
+    const fallbackUIDSource = feed.querySelector(
+      [
+        '.content > .info [usercard]',
+        '.content > .info [data-user-card]',
+        '.content > .info [data-usercard]',
+        '.content > .info [data-user-id]',
+        '.content > .info [data-uid]',
+      ].join(',')
+    );
+    const uidSource = [
+      nameSource,
+      nameSource?.closest('.info'),
+      avatarSource,
+      fallbackUIDSource,
+    ]
+      .filter((item) => item instanceof Element)
+      .find((item) => !!firstDOMUID(item));
+
+    return buildContext(uidSource, nameSource || uidSource);
+  }
+
+  function getCurrentProfilePageUID() {
+    if (!['weibo.com', 'www.weibo.com'].includes(location.hostname)) return '';
+    const match = location.pathname.match(/^\/(?:u\/)?(\d{5,})(?:\/|$)/);
+    return match ? match[1] : '';
+  }
+
   function getUserContextFromTarget(target) {
     const el =
       target instanceof Element ? target : target?.parentElement || null;
     if (!el) return null;
+    const searchContext = getSearchResultUserContext(el);
+    if (searchContext) return searchContext;
 
-    const source = el.closest(USER_CONTEXT_TARGET_SELECTOR);
-    if (!source) return null;
+    const source = el.closest(USER_CONTEXT_TARGET_SELECTOR) || el;
 
     const post = source.closest(DOM_CONTENT_ROOT_SELECTOR);
-    const uid = firstDOMUID(source, post);
+    const uid = firstDOMUID(source, post) || getCurrentProfilePageUID();
     if (!uid) return null;
 
-    const url = getProfileURL(source, uid, post);
+    const url =
+      getProfileURL(source, uid, post) ||
+      (uid === getCurrentProfilePageUID() ? location.href : '');
     if (!url) return null;
     const root = findContentRootForUID(source, uid);
     const fallbackRoot =
@@ -2505,7 +3096,8 @@
     return {
       uid,
       url,
-      name: getUserDisplayName(el, uid, post),
+      name:
+        getUserNameLabel(el) || getUserDisplayName(el, uid, post),
       source,
       root: root || fallbackRoot,
     };
@@ -2520,11 +3112,16 @@
       restoreHiddenRelationshipItems(document);
     } else {
       const post = ctx.root || findContentRootForUID(ctx.source, ctx.uid);
-      hideContentRoot(post, ctx.uid);
-      if (isCommentContentRoot(post)) {
+      if (shouldHideBlacklistDOMRoot(post)) {
+        hideContentRoot(post, ctx.uid);
+      }
+      if (
+        CONTENT_FILTER_CFG.hideBlacklistComments &&
+        isCommentContentRoot(post)
+      ) {
         const commentList = post.closest('.wbpro-list') || post.parentElement;
         hideBlockedCommentRoots(commentList || post);
-      } else {
+      } else if (CONTENT_FILTER_CFG.hideBlacklistPosts) {
         hideBlockedDOMPosts(document);
         scheduleBlockedDOMRefresh();
       }
@@ -2546,41 +3143,166 @@
     return item ? decodeURIComponent(item.slice(name.length + 1)) : '';
   }
 
-  async function addUserToWeiboBlacklist(uid) {
+  function clearOfficialBlockRelayState(requestId) {
+    const request = _GM_getValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
+    if (request?.id === requestId) {
+      _GM_setValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
+    }
+    const response = _GM_getValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
+    if (response?.id === requestId) {
+      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
+    }
+  }
+
+  function requestOfficialBlockViaMainHost(uid) {
+    if (!_GM_openInTab) {
+      return Promise.reject(new Error('当前脚本管理器不支持主站中继请求'));
+    }
+
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
+    _GM_setValue(OFFICIAL_BLOCK_REQUEST_KEY, {
+      id: requestId,
+      uid: String(uid),
+      createdAt: Date.now(),
+    });
+
+    const relayURL = new URL('https://weibo.com/');
+    relayURL.searchParams.set(OFFICIAL_BLOCK_RELAY_PARAM, requestId);
+    const relayTab = _GM_openInTab(relayURL.href, {
+      active: false,
+      insert: true,
+      setParent: true,
+    });
+
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const response = _GM_getValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
+        if (response?.id === requestId) {
+          clearInterval(timer);
+          try {
+            relayTab?.close?.();
+          } catch {}
+          clearOfficialBlockRelayState(requestId);
+          if (response.ok) {
+            resolve(response.data || { ok: 1 });
+          } else {
+            reject(new Error(response.error || '新浪微博黑名单请求失败'));
+          }
+          return;
+        }
+
+        if (Date.now() - startedAt < OFFICIAL_BLOCK_RELAY_TIMEOUT_MS) return;
+        clearInterval(timer);
+        try {
+          relayTab?.close?.();
+        } catch {}
+        clearOfficialBlockRelayState(requestId);
+        reject(new Error('新浪微博主站中继请求超时'));
+      }, 200);
+    });
+  }
+
+  async function processOfficialBlockRelay() {
+    if (!canUseSettingApi()) return;
+
+    let requestId = '';
+    try {
+      requestId = new URL(location.href).searchParams.get(
+        OFFICIAL_BLOCK_RELAY_PARAM
+      );
+    } catch {}
+    if (!requestId) return;
+
+    const request = _GM_getValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
+    if (
+      request?.id !== requestId ||
+      !/^\d{5,}$/.test(String(request?.uid || '')) ||
+      Date.now() - Number(request?.createdAt || 0) >
+        OFFICIAL_BLOCK_RELAY_TIMEOUT_MS
+    ) {
+      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+        id: requestId,
+        ok: false,
+        error: '新浪微博主站中继请求无效或已过期',
+      });
+      return;
+    }
+
+    try {
+      const data = await addUserToWeiboBlacklist(request.uid, {
+        allowRelay: false,
+      });
+      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+        id: requestId,
+        ok: true,
+        data,
+      });
+    } catch (err) {
+      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+        id: requestId,
+        ok: false,
+        error: err?.message || String(err),
+      });
+    }
+
+    setTimeout(() => {
+      try {
+        window.close();
+      } catch {}
+    }, 250);
+  }
+
+  async function addUserToWeiboBlacklist(uid, options = {}) {
     const headers = {
-      'content-type': 'application/x-www-form-urlencoded',
+      'content-type': 'application/json; charset=UTF-8',
       'x-requested-with': 'XMLHttpRequest',
       'client-version': '3.0.0',
     };
     const xsrf = getCookieValue('XSRF-TOKEN');
     if (xsrf) headers['x-xsrf-token'] = xsrf;
 
-    const body = new URLSearchParams({
-      uid,
-      status: '1',
-      interact: '1',
-      follow: '1',
-    });
+    const payload = {
+      uid: Number(uid),
+      status: 1,
+      interact: 1,
+      follow: 1,
+    };
+    const body = JSON.stringify(payload);
 
-    const res = await WB_BL_NATIVE.fetch(
-      'https://weibo.com/ajax/statuses/filterUser',
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body,
+    // 微博 WAF 会拒绝搜索子域发起的跨域拉黑请求；交给后台主站页同源执行。
+    if (location.hostname === 's.weibo.com') {
+      if (options.allowRelay === false) {
+        throw new Error('新浪微博黑名单请求必须在主站同源执行');
       }
-    );
+      return requestOfficialBlockViaMainHost(uid);
+    }
+
+    const apiHost =
+      location.hostname === 'www.weibo.com'
+        ? 'https://www.weibo.com'
+        : 'https://weibo.com';
+    const res = await WB_BL_NATIVE.fetch(`${apiHost}/ajax/statuses/filterUser`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body,
+    });
 
     let data = null;
     try {
       data = await res.clone().json();
     } catch {}
-    if (!res.ok || data?.ok === 0) {
-      throw new Error(data?.msg || data?.message || `HTTP ${res.status}`);
+    if (!res.ok || data?.ok !== 1) {
+      throw new Error(
+        data?.msg || data?.message || `新浪微博返回异常（HTTP ${res.status}）`
+      );
     }
     return data;
   }
+
+  processOfficialBlockRelay();
 
   async function addContextUserToBLAndWeibo(ctx) {
     if (!ctx?.uid) return;
@@ -2759,7 +3481,8 @@
     };
 
     const handleContextMenu = (e) => {
-      const ctx = getUserContextFromTarget(e.target);
+      const nameTarget = getUserNameContextTarget(e.target);
+      const ctx = nameTarget ? getUserContextFromTarget(nameTarget) : null;
       if (!ctx) {
         hideMenu({ force: true });
         return;
@@ -2827,6 +3550,7 @@
       restoreHiddenRelationshipItems(document);
       return false;
     }
+    if (!CONTENT_FILTER_CFG.hideBlacklistComments) return false;
     if (!BL.size || !root || !root.querySelectorAll) return false;
     const nodes = [];
     if (root instanceof Element && root.matches(DOM_UID_SELECTOR)) {
@@ -2848,6 +3572,7 @@
 
   function hideBlockedDOMPosts(root = document) {
     syncRelationshipPageMode();
+    const hiddenAd = hideRecognizedAds(root || document);
     removeWeiboFloatingVideoPlayers(root || document);
     suppressFloatingVideoPlayers(root || document);
     if (!root || !root.querySelectorAll) return;
@@ -2865,12 +3590,13 @@
     }
     root.querySelectorAll(DOM_UID_SELECTOR).forEach((el) => nodes.push(el));
 
-    let hiddenAny = false;
+    let hiddenAny = hiddenAd || hideBlockedSearchResultCards(root);
     nodes.forEach((el) => {
       const blockedUID = [...extractDOMUIDs(el)].find((uid) => BL.has(uid));
       if (!blockedUID) return;
 
       const post = findContentRootForUID(el, blockedUID);
+      if (!shouldHideBlacklistDOMRoot(post)) return;
       if (hideContentRoot(post, blockedUID)) hiddenAny = true;
     });
     compactVirtualScrollerGaps(hiddenAny ? document : root);
@@ -2931,6 +3657,22 @@
     setTimeout(run, 1600);
   }
 
+  function scheduleBlockedDOMRefreshWhenPageReady() {
+    const run = () => {
+      hideBlockedDOMPosts(document);
+      hideBlockedCommentRoots(document);
+      scheduleBlockedDOMRefresh();
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', run, { once: true });
+    } else {
+      run();
+    }
+    window.addEventListener('load', run, { once: true });
+    setTimeout(run, 2500);
+  }
+
   let nativeVirtualGapRefreshFrame = 0;
   function refreshNativeVirtualGapsOnScroll() {
     if (nativeVirtualGapRefreshFrame) return;
@@ -2977,8 +3719,11 @@
         : input instanceof URL
           ? input.href
           : input?.url || '';
-    // 永久屏蔽"全部关注"流
-    if (url.includes('unreadfriendstimeline')) {
+    // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
+    if (
+      timelineDefault.value &&
+      url.includes('unreadfriendstimeline')
+    ) {
       return new Response(
         JSON.stringify({
           ok: 1,
@@ -3028,15 +3773,10 @@
       }
     }
 
-    if (
-      typeof url === 'string' &&
-      /\/(?:ajax\/(?:feed|statuses|comment|getCommentList|repost|like)|graphql\/|(?:mymblog|timeline|index))/.test(
-        url
-      )
-    ) {
+    if (isFilterableContentURL(url)) {
       try {
         const data = await res.clone().json();
-        return new Response(JSON.stringify(filterData(data)), {
+        return new Response(JSON.stringify(filterContentResponseData(data, url)), {
           status: res.status,
           statusText: res.statusText,
           headers: res.headers,
@@ -3101,8 +3841,11 @@
           }
         }
 
-        // 屏蔽"全部关注"流
-        if (url.includes('unreadfriendstimeline')) {
+        // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
+        if (
+          timelineDefault.value &&
+          url.includes('unreadfriendstimeline')
+        ) {
           defineXHRTextResponse(
             this,
             JSON.stringify({
@@ -3125,12 +3868,13 @@
           return;
         }
         // 过滤黑名单内容
-        if (
-          /\/(?:ajax\/(?:feed|statuses)|(?:mymblog|timeline))/.test(url)
-        ) {
+        if (isFilterableContentURL(url)) {
           try {
             const o = JSON.parse(this.responseText);
-            defineXHRTextResponse(this, JSON.stringify(filterData(o)));
+            defineXHRTextResponse(
+              this,
+              JSON.stringify(filterContentResponseData(o, url))
+            );
           } catch {}
         }
       }
@@ -3139,10 +3883,12 @@
   };
 
   // === WebSocket 拦截 ===
-  function getFilteredWebSocketEvent(evt) {
+  function getFilteredWebSocketEvent(evt, url = '') {
     if (!evt || typeof evt.data !== 'string') return evt;
     try {
-      const data = JSON.stringify(filterData(JSON.parse(evt.data)));
+      const data = JSON.stringify(
+        filterContentResponseData(JSON.parse(evt.data), url)
+      );
       return new Proxy(evt, {
         get(target, prop, receiver) {
           if (prop === 'data') return data;
@@ -3159,6 +3905,7 @@
     constructor(url, protocols) {
       if (protocols === undefined) super(url);
       else super(url, protocols);
+      this.__wbURL = String(url || '');
       this.__wbMessageListeners = new WeakMap();
       this.__wbOnMessage = null;
       this.__wbOnMessageWrapper = null;
@@ -3178,14 +3925,17 @@
       if (!wrapped) {
         wrapped =
           typeof listener === 'function'
-            ? function (evt) {
-                return listener.call(this, getFilteredWebSocketEvent(evt));
+             ? function (evt) {
+                return listener.call(
+                  this,
+                  getFilteredWebSocketEvent(evt, this.__wbURL)
+                );
               }
             : {
                 handleEvent: (evt) =>
                   listener.handleEvent.call(
                     listener,
-                    getFilteredWebSocketEvent(evt)
+                    getFilteredWebSocketEvent(evt, this.__wbURL)
                   ),
               };
         this.__wbMessageListeners.set(listener, wrapped);
@@ -3211,7 +3961,11 @@
       }
       this.__wbOnMessage = typeof listener === 'function' ? listener : null;
       this.__wbOnMessageWrapper = this.__wbOnMessage
-        ? (evt) => this.__wbOnMessage.call(this, getFilteredWebSocketEvent(evt))
+        ? (evt) =>
+            this.__wbOnMessage.call(
+              this,
+              getFilteredWebSocketEvent(evt, this.__wbURL)
+            )
         : null;
       if (this.__wbOnMessageWrapper) {
         super.addEventListener('message', this.__wbOnMessageWrapper);
@@ -3246,14 +4000,22 @@
             return;
           }
           Array.from(m.addedNodes).forEach((n) => {
-            if (n instanceof HTMLElement) {
-              removeWeiboFloatingVideoPlayers(n);
-              suppressFloatingVideoPlayers(n);
-              if (hasHiddenFeedContent || hasNativeHiddenGap) {
-                hideBlockedDOMPosts(hasNativeHiddenGap ? document : n);
-              } else {
-                hideBlockedCommentRoots(n);
+            if (n?.nodeType === 1) {
+              const addedElement = n;
+              hideRecognizedAds(addedElement);
+              removeWeiboFloatingVideoPlayers(addedElement);
+              suppressFloatingVideoPlayers(addedElement);
+              if (
+                hasHiddenFeedContent ||
+                hasNativeHiddenGap ||
+                addedElement.matches(DOM_UID_SELECTOR) ||
+                addedElement.querySelector(DOM_UID_SELECTOR)
+              ) {
+                hideBlockedDOMPosts(
+                  hasNativeHiddenGap ? document : addedElement
+                );
               }
+              hideBlockedCommentRoots(addedElement);
             }
           });
         });
@@ -3292,6 +4054,7 @@
   });
 
   initUserContextMenu();
+  initSearchResultBlacklistFilter();
 
   /* === Tampermonkey 菜单（精简版） === */
 
@@ -3328,10 +4091,11 @@
   );
 })();
 
-/* === Settings v4 (no whitelist) + DOM toggles + BL add/remove === */
+/* === Settings v5: standard navigation + UID management === */
 (function () {
   'use strict';
   const UID_KEY = 'WB_BL_list';
+  const UID_MANAGER_PAGE_SIZE = 50;
   const MAX_IMPORT_FILE_SIZE = 2 * 1024 * 1024;
   const MAX_IMPORT_UIDS = 100000;
 
@@ -3346,6 +4110,14 @@
     hideNavRecommend: false,
     hideNavGame: true,
     defaultLatestTimeline: true,
+    hideSearchRelatedUsers: true,
+    hideBlacklistPosts: true,
+    hideBlacklistComments: true,
+    hideBlacklistSearchResults: true,
+    hideBlacklistUserCards: true,
+    hideBlacklistInteractions: true,
+    hideAds: true,
+    showSettingsButton: true,
   };
 
   function normalizeCfg(rawCfg) {
@@ -3391,9 +4163,14 @@
   }
   function addToBL(uids) {
     const set = readBLSet();
-    uids.forEach((u) => set.add(String(u).trim()));
+    const addedUIDs = [];
+    uids.forEach((u) => {
+      const uid = String(u).trim();
+      if (!set.has(uid)) addedUIDs.push(uid);
+      set.add(uid);
+    });
     writeBLSet(set);
-    return set.size;
+    return { size: set.size, added: addedUIDs.length };
   }
   function removeFromBL(uids) {
     const set = readBLSet();
@@ -3414,7 +4191,7 @@
     const uids = Array.from(blSet);
     const exportData = {
       exportTime: new Date().toISOString(),
-      version: '1.2.2',
+      version: '2.0.0',
       scriptName: 'Weibo Retro Twitter-Style Clone',
       count: uids.length,
       uids: uids,
@@ -3492,13 +4269,16 @@
           let newSize,
             addedCount,
             removedCount = 0;
+          const addedUIDs = uidsToImport.filter(
+            (uid) => !currentSet.has(uid)
+          );
 
           if (mode === 'replace') {
             // 替换模式：清空后导入
             const newSet = new Set(uidsToImport);
             writeBLSet(newSet);
             newSize = newSet.size;
-            addedCount = uidsToImport.filter((u) => !currentSet.has(u)).length;
+            addedCount = addedUIDs.length;
             removedCount = Array.from(currentSet).filter(
               (u) => !newSet.has(u)
             ).length;
@@ -3509,7 +4289,6 @@
             newSize = currentSet.size;
             addedCount = newSize - oldSize;
           }
-
           resolve({
             success: true,
             importedCount: uidsToImport.length,
@@ -3567,6 +4346,57 @@
     }
     return new Set(t);
   }
+  const SEARCH_RELATED_USERS_HIDDEN_ATTR =
+    'data-__wb_search_related_users_hidden';
+
+  function hideSearchRelatedUsersPanel(root = document) {
+    if (
+      location.hostname !== 's.weibo.com' ||
+      !/^\/weibo(?:\/|$)/.test(location.pathname) ||
+      !root ||
+      !root.querySelectorAll
+    ) {
+      return;
+    }
+
+    if (!CFG.hideSearchRelatedUsers) {
+      document
+        .querySelectorAll(`[${SEARCH_RELATED_USERS_HIDDEN_ATTR}]`)
+        .forEach((panel) => {
+          panel.style.removeProperty('display');
+          panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
+          panel.removeAttribute('data-__wb_hidden_by_userscript');
+        });
+      return;
+    }
+
+    const headings = [];
+    if (
+      root instanceof Element &&
+      root.matches('.card-head .title') &&
+      normText(root.textContent) === '相关用户'
+    ) {
+      headings.push(root);
+    }
+    root.querySelectorAll('.card-head .title').forEach((heading) => {
+      if (normText(heading.textContent) === '相关用户') headings.push(heading);
+    });
+
+    headings.forEach((heading) => {
+      const panel = heading.closest('.card-wrap');
+      if (
+        !panel ||
+        panel === document.body ||
+        panel === document.documentElement
+      ) {
+        return;
+      }
+      panel.style.setProperty('display', 'none', 'important');
+      panel.setAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR, '1');
+      panel.setAttribute('data-__wb_hidden_by_userscript', '1');
+    });
+  }
+
   function findSectionRootFromHeading(h) {
     const side = h.closest('.wbpro-side');
     if (side && side !== document.body && side !== document.documentElement) {
@@ -3824,6 +4654,7 @@
   function hidePanels(root = document, options = {}) {
     promoteHiddenSidebarShells(root);
     hideFollowRecommendationPanel(root);
+    hideSearchRelatedUsersPanel(root);
 
     const BLOCK_TITLES = buildBlockTitles();
     const headings = root.querySelectorAll(
@@ -4035,23 +4866,46 @@
   function ensureStyles() {
     if (document.getElementById('wbset-style')) return;
     const css = `
-    .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;border:0;border-radius:999px;padding:10px 12px;background:#111;color:#fff;font-size:13px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.2);}
-    .wbset-panel{position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.35);}
-    .wbset-card{width:min(620px,92vw);max-height:86vh;overflow:auto;background:#fff;color:#111;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.25);}
-    .wbset-hdr{padding:14px 18px;border-bottom:1px solid #eee;font-weight:600;font-size:15px;display:flex;align-items:center;justify-content:space-between;}
-    .wbset-bdy{padding:16px 18px;display:grid;gap:14px;}
-    .wbset-sec{padding:12px 12px;border:1px solid #f0f0f0;border-radius:12px}
-    .wbset-sec h4{margin:0 0 8px 0;font-size:14px}
-    .wbset-row{display:flex;align-items:center;gap:8px;margin:6px 0}
-    .wbset-row input[type="text"], .wbset-row textarea{flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:8px}
-    .wbset-note{font-size:12px;color:#777}
-    .wbset-ftr{padding:14px 18px;border-top:1px solid #eee;display:flex;gap:10px;justify-content:flex-end}
-    .wbset-btn2{border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
-    .wbset-btn2.primary{background:#111;color:#fff}
-    .wbset-btn2.ghost{background:#f6f6f6}
-    .wbset-btn2.danger{background:#e74c3c;color:#fff}
-    .wbset-btn2.danger:hover{background:#c0392b}
-    .danger-zone{border:1px solid #e74c3c;border-radius:12px;padding:12px;margin-top:12px;background:#fdf2f2}
+    .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;width:46px;height:46px;display:grid;place-items:center;padding:0;border:1px solid rgba(0,0,0,.1);border-radius:50%;background:rgba(255,255,255,.94);color:#252525;cursor:pointer;box-shadow:0 8px 26px rgba(0,0,0,.18);backdrop-filter:blur(10px);transition:transform .18s ease,box-shadow .18s ease,background .18s ease;}
+    .wbset-btn svg{width:21px;height:21px;display:block;transition:transform .22s ease}
+    .wbset-btn:hover{background:#fff;transform:translateY(-2px);box-shadow:0 12px 32px rgba(0,0,0,.22)}
+    .wbset-btn:hover svg{transform:rotate(24deg)}.wbset-btn:active{transform:translateY(0) scale(.96)}
+    .wbset-panel{--wbset-bg:#fff;--wbset-sidebar:#f7f7f8;--wbset-text:#171717;--wbset-muted:#6f6f78;--wbset-border:#e8e8eb;--wbset-hover:#eeeeF1;--wbset-accent:#111;position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.42);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--wbset-text);}
+    .wbset-card{width:min(940px,94vw);height:min(720px,90vh);display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden;background:var(--wbset-bg);color:var(--wbset-text);border:1px solid rgba(0,0,0,.08);border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.28);}
+    .wbset-hdr{min-height:64px;padding:0 20px;border-bottom:1px solid var(--wbset-border);display:flex;align-items:center;justify-content:space-between;}
+    .wbset-title{display:flex;align-items:baseline;gap:10px}.wbset-title strong{font-size:16px}.wbset-version{font-size:12px;color:var(--wbset-muted)}
+    .wbset-shell{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:0}
+    .wbset-nav{padding:14px 10px;background:var(--wbset-sidebar);border-right:1px solid var(--wbset-border);overflow:auto}
+    .wbset-nav button{width:100%;padding:9px 11px;margin:2px 0;border:0;border-radius:8px;background:transparent;color:var(--wbset-muted);font:500 13px/1.3 inherit;text-align:left;cursor:pointer}
+    .wbset-nav button:hover{background:var(--wbset-hover);color:var(--wbset-text)}
+    .wbset-nav button.is-active{background:var(--wbset-bg);color:var(--wbset-text);box-shadow:0 0 0 1px var(--wbset-border)}
+    .wbset-content{min-width:0;overflow:auto;padding:26px 30px 34px}
+    .wbset-page{display:none}.wbset-page.is-active{display:block}
+    .wbset-page-head{margin-bottom:22px}.wbset-page-head h3{margin:0 0 5px;font-size:20px;line-height:1.3}.wbset-page-head p{margin:0;color:var(--wbset-muted);font-size:13px}
+    .wbset-sec{padding:0;border:1px solid var(--wbset-border);border-radius:12px;overflow:hidden;margin-bottom:16px;background:var(--wbset-bg)}
+    .wbset-sec-title{padding:13px 15px 10px;font-size:13px;font-weight:650;border-bottom:1px solid var(--wbset-border)}
+    .wbset-setting{position:relative;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:13px 15px;border-bottom:1px solid var(--wbset-border);cursor:pointer}
+    .wbset-setting:last-child{border-bottom:0}.wbset-setting:hover{background:color-mix(in srgb,var(--wbset-sidebar) 58%,transparent)}
+    .wbset-setting-copy{min-width:0;display:grid;gap:3px}.wbset-setting-copy strong{font-size:13px;font-weight:560}.wbset-setting-copy span{font-size:12px;line-height:1.45;color:var(--wbset-muted)}
+    .wbset-setting input[type="checkbox"]{position:absolute;opacity:0;pointer-events:none}
+    .wbset-switch{position:relative;flex:0 0 auto;width:34px;height:20px;border-radius:999px;background:#c9c9cf;transition:.16s ease}
+    .wbset-switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.16s ease}
+    .wbset-setting input:checked + .wbset-switch{background:#202020}.wbset-setting input:checked + .wbset-switch::after{transform:translateX(14px)}
+    .wbset-row{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:12px 15px}.wbset-row + .wbset-row{padding-top:0}
+    .wbset-row textarea{width:100%;min-height:68px;box-sizing:border-box;resize:vertical;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:8px;background:var(--wbset-bg);color:var(--wbset-text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
+    .wbset-input{box-sizing:border-box;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:8px;background:var(--wbset-bg);color:var(--wbset-text);font:13px/1.3 inherit;outline:none}.wbset-input:focus,.wbset-row textarea:focus{border-color:#8b8b94;box-shadow:0 0 0 3px rgba(127,127,138,.12)}
+    .wbset-note{font-size:12px;line-height:1.5;color:var(--wbset-muted)}
+    .wbset-ftr{min-height:64px;padding:0 20px;border-top:1px solid var(--wbset-border);display:flex;gap:9px;align-items:center;justify-content:flex-end}
+    .wbset-btn2{border:1px solid transparent;border-radius:8px;padding:8px 12px;background:var(--wbset-hover);color:var(--wbset-text);font:500 13px/1.2 inherit;cursor:pointer}
+    .wbset-btn2:hover{filter:brightness(.97)}.wbset-btn2.primary{background:var(--wbset-accent);color:#fff}.wbset-btn2.ghost{border-color:var(--wbset-border);background:transparent}.wbset-btn2.danger{background:#c9362b;color:#fff}.wbset-icon-btn{width:34px;height:34px;padding:0;font-size:18px}
+    .wbset-stats{display:flex;gap:10px;padding:0 0 16px}.wbset-stat{flex:1;padding:13px 15px;border:1px solid var(--wbset-border);border-radius:10px}.wbset-stat span{display:block;font-size:12px;color:var(--wbset-muted)}.wbset-stat strong{display:block;margin-top:4px;font-size:20px}
+    .wbset-manager-tools{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:10px;margin-bottom:12px}.wbset-manager-tools .wbset-input{width:100%}
+    .wbset-uid-list{border:1px solid var(--wbset-border);border-radius:10px;overflow:hidden}.wbset-uid-item{display:grid;grid-template-columns:minmax(140px,1fr) auto auto;gap:10px;align-items:center;min-height:43px;padding:0 10px 0 13px;border-bottom:1px solid var(--wbset-border);font-size:12px}.wbset-uid-item:last-child{border-bottom:0}.wbset-uid-item code{font-size:12px;color:var(--wbset-text)}.wbset-uid-link{color:var(--wbset-muted);text-decoration:none}.wbset-uid-link:hover{color:var(--wbset-text);text-decoration:underline}.wbset-uid-remove{padding:6px 9px;color:#b12e25}
+    .wbset-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;padding-top:13px}.wbset-pagination > span{min-width:110px;text-align:center;font-size:12px;color:var(--wbset-muted)}.wbset-page-jump{display:flex}.wbset-page-jump .wbset-input{width:74px;border-radius:8px 0 0 8px}.wbset-page-jump .wbset-btn2{border-radius:0 8px 8px 0;white-space:nowrap}.wbset-btn2:disabled{opacity:.42;cursor:not-allowed;filter:none}
+    .wbset-empty{padding:34px 18px;text-align:center;color:var(--wbset-muted);font-size:13px}
+    .danger-zone{border-color:rgba(201,54,43,.45);background:rgba(201,54,43,.035)}
+    @media (prefers-color-scheme:dark){.wbset-btn{border-color:rgba(255,255,255,.12);background:rgba(35,35,35,.94);color:#f1f1f1}.wbset-btn:hover{background:#303030}.wbset-panel{--wbset-bg:#202020;--wbset-sidebar:#181818;--wbset-text:#f1f1f1;--wbset-muted:#aaaab2;--wbset-border:#36363a;--wbset-hover:#303034;--wbset-accent:#f1f1f1}.wbset-btn2.primary{color:#171717}.wbset-setting input:checked + .wbset-switch{background:#ededed}.wbset-switch::after{background:#fff}}
+    @media (max-width:720px){.wbset-panel{padding:10px}.wbset-card{width:100%;height:94vh}.wbset-shell{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.wbset-nav{display:flex;gap:4px;padding:8px;overflow:auto;border-right:0;border-bottom:1px solid var(--wbset-border)}.wbset-nav button{width:auto;white-space:nowrap}.wbset-content{padding:20px 16px 28px}.wbset-manager-tools{grid-template-columns:1fr}.wbset-uid-item{grid-template-columns:1fr auto}.wbset-uid-link{display:none}.wbset-stats{flex-direction:column}}
     `;
     const s = document.createElement('style');
     s.id = 'wbset-style';
@@ -4066,122 +4920,163 @@
       panel = document.createElement('div');
       panel.className = 'wbset-panel';
       panel.innerHTML = `
-        <div class="wbset-card" role="dialog" aria-modal="true">
+        <div class="wbset-card" role="dialog" aria-modal="true" aria-labelledby="wbset-dialog-title">
           <div class="wbset-hdr">
-            <div>脚本设置</div>
-            <button class="wbset-btn2 ghost" id="wbset-close">关闭</button>
+            <div class="wbset-title">
+              <strong id="wbset-dialog-title">微博增强设置</strong>
+              <span class="wbset-version">v2.0.0</span>
+            </div>
+            <button class="wbset-btn2 ghost wbset-icon-btn" id="wbset-close" aria-label="关闭设置">×</button>
           </div>
-          <div class="wbset-bdy">
-            <div class="wbset-sec">
-              <h4>时间线设置</h4>
-              <label class="wbset-row"><input type="checkbox" id="wbset-latest"> 主页默认显示「最新微博」（按时间顺序）</label>
-              <div class="wbset-row wbset-note">说明：勾选后每次打开首页自动切换到「最新微博」分栏。</div>
-            </div>
+          <div class="wbset-shell">
+            <nav class="wbset-nav" role="tablist" aria-label="设置分类">
+              <button type="button" role="tab" aria-selected="true" class="is-active" data-wbset-page="general">常规</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="appearance">外观</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="blacklist">黑名单</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="uids">UID 管理</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="data">数据与同步</button>
+            </nav>
+            <div class="wbset-content">
+              <section class="wbset-page is-active" role="tabpanel" data-wbset-section="general">
+                <div class="wbset-page-head">
+                  <h3>常规</h3>
+                  <p>控制时间线、搜索结果和广告过滤的默认行为。</p>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">浏览体验</div>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>主页默认显示「最新微博」</strong><span>打开首页时自动切换到按时间顺序排列的时间线。</span></span>
+                    <input type="checkbox" id="wbset-latest"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>隐藏搜索页「相关用户」</strong><span>隐藏综合搜索页右侧的整个相关用户卡片。</span></span>
+                    <input type="checkbox" id="wbset-search-related-users"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>隐藏广告和推广微博</strong><span>识别接口广告标记及页面中的广告、推广和赞助标识。</span></span>
+                    <input type="checkbox" id="wbset-hide-ads"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                </div>
+              </section>
 
-            <div class="wbset-sec">
-              <h4>导航栏设置</h4>
-              <label class="wbset-row"><input type="checkbox" id="wbset-nav-video"> 隐藏导航栏「视频」图标</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-nav-recommend"> 隐藏导航栏「推荐」图标</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-nav-game"> 隐藏导航栏「游戏」图标</label>
-              <div class="wbset-row wbset-note">说明：分别控制顶部导航栏中的视频、推荐和游戏入口。</div>
-            </div>
+              <section class="wbset-page" role="tabpanel" data-wbset-section="appearance">
+                <div class="wbset-page-head">
+                  <h3>外观</h3>
+                  <p>决定脚本入口以及微博页面各区域是否显示。</p>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">脚本入口</div>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>显示右下角设置按钮</strong><span>关闭后仍可从 Tampermonkey 菜单中的「打开脚本设置」进入。</span></span>
+                    <input type="checkbox" id="wbset-show-settings-button"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">顶部导航</div>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>隐藏「视频」图标</strong><span>控制顶部导航栏的视频入口。</span></span>
+                    <input type="checkbox" id="wbset-nav-video"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>隐藏「推荐」图标</strong><span>控制顶部导航栏的推荐入口。</span></span>
+                    <input type="checkbox" id="wbset-nav-recommend"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="wbset-setting">
+                    <span class="wbset-setting-copy"><strong>隐藏「游戏」图标</strong><span>控制顶部导航栏的游戏入口。</span></span>
+                    <input type="checkbox" id="wbset-nav-game"><span class="wbset-switch" aria-hidden="true"></span>
+                  </label>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">侧栏版块</div>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏微博热搜</strong><span>移除侧栏热搜榜。</span></span><input type="checkbox" id="wbset-hot"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏你可能感兴趣的人</strong><span>移除侧栏用户推荐。</span></span><input type="checkbox" id="wbset-sug"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏关注推荐</strong><span>移除关注推荐版块。</span></span><input type="checkbox" id="wbset-follow-rec"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏常用功能</strong><span>移除常用功能版块。</span></span><input type="checkbox" id="wbset-common-functions"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏粉丝群</strong><span>移除粉丝群版块。</span></span><input type="checkbox" id="wbset-fan-groups"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏经常访问的超话</strong><span>移除经常访问的超话版块。</span></span><input type="checkbox" id="wbset-frequent-supertopics"><span class="wbset-switch" aria-hidden="true"></span></label>
+                </div>
+              </section>
 
-            <div class="wbset-sec">
-              <h4>侧栏版块隐藏</h4>
-              <label class="wbset-row"><input type="checkbox" id="wbset-hot"> 隐藏：微博热搜</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-sug"> 隐藏：你可能感兴趣的人</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-follow-rec"> 隐藏：关注推荐</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-common-functions"> 隐藏：常用功能</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-fan-groups"> 隐藏：粉丝群</label>
-              <label class="wbset-row"><input type="checkbox" id="wbset-frequent-supertopics"> 隐藏：经常访问的超话</label>
-              <div class="wbset-row wbset-note">说明：仅影响侧栏版块的显示，不改动你的黑名单数据。</div>
-            </div>
-            <div class="wbset-sec">
+              <section class="wbset-page" role="tabpanel" data-wbset-section="blacklist">
+                <div class="wbset-page-head">
+                  <h3>黑名单</h3>
+                  <p>选择黑名单中的用户需要在哪些页面和内容类型中隐藏。</p>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">屏蔽范围</div>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>微博和转发</strong><span>隐藏黑名单用户发布或转发的微博。</span></span><input type="checkbox" id="wbset-bl-posts"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>评论和回复</strong><span>隐藏黑名单用户的评论和楼中楼回复。</span></span><input type="checkbox" id="wbset-bl-comments"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>搜索结果</strong><span>隐藏黑名单用户作为主作者的搜索结果。</span></span><input type="checkbox" id="wbset-bl-search"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>用户卡片和推荐项</strong><span>隐藏相关用户和推荐用户卡片。</span></span><input type="checkbox" id="wbset-bl-user-cards"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>转发和点赞用户列表</strong><span>隐藏互动列表里的黑名单用户；关注和粉丝页始终保留。</span></span><input type="checkbox" id="wbset-bl-interactions"><span class="wbset-switch" aria-hidden="true"></span></label>
+                </div>
+              </section>
 
-              <h4>🛠️ 手动管理</h4>
+              <section class="wbset-page" role="tabpanel" data-wbset-section="uids">
+                <div class="wbset-page-head">
+                  <h3>UID 管理</h3>
+                  <p>浏览和搜索所有已保存 UID，并直接添加或删除本地黑名单条目。</p>
+                </div>
+                <div class="wbset-stats">
+                  <div class="wbset-stat"><span>已保存 UID</span><strong id="wbset-count">0</strong></div>
+                  <div class="wbset-stat"><span>当前匹配</span><strong id="wbset-uid-match-count">0</strong></div>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">新增 UID</div>
+                  <div class="wbset-row"><textarea id="wbset-uids" rows="3" placeholder="输入一个或多个 UID，支持逗号、空格或换行分隔"></textarea></div>
+                  <div class="wbset-row">
+                    <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
+                    <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
+                  </div>
+                </div>
+                <div class="wbset-manager-tools">
+                  <input class="wbset-input" type="search" id="wbset-uid-search" inputmode="numeric" placeholder="搜索 UID">
+                  <button class="wbset-btn2 ghost" id="wbset-refresh">刷新列表</button>
+                </div>
+                <div class="wbset-uid-list" id="wbset-uid-list" aria-live="polite"></div>
+                <div class="wbset-pagination">
+                  <button class="wbset-btn2 ghost" id="wbset-uid-prev">上一页</button>
+                  <span id="wbset-uid-page">第 1 / 1 页</span>
+                  <div class="wbset-page-jump">
+                    <input class="wbset-input" type="number" id="wbset-page-jump-input" min="1" step="1" inputmode="numeric" aria-label="输入页数" placeholder="页数">
+                    <button class="wbset-btn2" id="wbset-page-jump">跳转</button>
+                  </div>
+                  <button class="wbset-btn2 ghost" id="wbset-uid-next">下一页</button>
+                </div>
+                <p class="wbset-note">每页显示 ${UID_MANAGER_PAGE_SIZE} 条，按最近写入顺序排列。可输入页数快速跳转；删除后会立即更新本地黑名单和当前页面过滤结果。</p>
+              </section>
 
-              <div class="wbset-row">
-
-                <textarea id="wbset-uids" rows="2" placeholder="输入一个或多个 UID，支持逗号/空格/换行分隔"></textarea>
-
-              </div>
-
-              <div class="wbset-row">
-
-                <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
-
-                <button class="wbset-btn2" id="wbset-bl-remove">从黑名单移除</button>
-
-                <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
-
-              </div>
-
-              <div class="wbset-row">
-
-                <span class="wbset-note">当前缓存 UID 数：<b id="wbset-count">-</b></span>
-
-                <button class="wbset-btn2 ghost" id="wbset-refresh">刷新统计</button>
-
-              </div>
-
-              <div class="wbset-row wbset-note">添加/移除后立即写入本地缓存。</div>
-
-            </div>
-
-
-
-            <div class="wbset-sec">
-
-              <h4>🔄 黑名单同步</h4>
-
-              <div class="wbset-row">
-
-                <button class="wbset-btn2" id="wbset-sync-delta">⚡ 增量同步</button>
-
-                <button class="wbset-btn2 ghost" id="wbset-sync-five">🔄 同步前5页</button>
-
-                <button class="wbset-btn2 ghost" id="wbset-sync-full">📡 完整同步</button>
-
-              </div>
-
-              <div class="wbset-row wbset-note">增量：仅第1页；前5页：扫描前5页增量更新；完整：遍历全部分页。</div>
-
-            </div>
-
-
-
-            <div class="wbset-sec">
-
-              <h4>💾 备份与恢复</h4>
-
-              <div class="wbset-row">
-
-                <button class="wbset-btn2" id="wbset-export">📤 导出黑名单</button>
-
-                <button class="wbset-btn2" id="wbset-import-merge">📥 导入（合并）</button>
-
-                <button class="wbset-btn2 ghost" id="wbset-import-replace">🔄 导入（替换）</button>
-
-              </div>
-
-              <div class="wbset-row wbset-note">导出为 JSON 文件；合并保留现有数据；替换完全覆盖。</div>
-
-            </div>
-
-
-
-            <div class="wbset-sec danger-zone">
-
-              <h4>⚠️ 危险操作</h4>
-
-              <div class="wbset-row">
-
-                <button class="wbset-btn2 danger" id="wbset-clear-all">🗑️ 清空本地黑名单</button>
-
-              </div>
-
-              <div class="wbset-row wbset-note" style="color:#c0392b;">此操作不可恢复，请先导出备份！</div>
-
+              <section class="wbset-page" role="tabpanel" data-wbset-section="data">
+                <div class="wbset-page-head">
+                  <h3>数据与同步</h3>
+                  <p>同步新浪微博官方黑名单，或备份和恢复本地数据。</p>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">黑名单同步</div>
+                  <div class="wbset-row">
+                    <button class="wbset-btn2" id="wbset-sync-delta">增量同步</button>
+                    <button class="wbset-btn2 ghost" id="wbset-sync-five">同步前 5 页</button>
+                    <button class="wbset-btn2 ghost" id="wbset-sync-full">完整同步</button>
+                  </div>
+                  <div class="wbset-row wbset-note">增量同步只读取第 1 页；完整同步会遍历全部分页。</div>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">备份与恢复</div>
+                  <div class="wbset-row">
+                    <button class="wbset-btn2" id="wbset-export">导出黑名单</button>
+                    <button class="wbset-btn2" id="wbset-import-merge">导入并合并</button>
+                    <button class="wbset-btn2 ghost" id="wbset-import-replace">导入并替换</button>
+                  </div>
+                  <div class="wbset-row wbset-note">导出格式为 JSON；替换操作会删除文件中不存在的现有 UID。</div>
+                </div>
+                <div class="wbset-sec danger-zone">
+                  <div class="wbset-sec-title">危险操作</div>
+                  <div class="wbset-row">
+                    <button class="wbset-btn2 danger" id="wbset-clear-all">清空本地黑名单</button>
+                    <span class="wbset-note">此操作不可恢复，请先导出备份。</span>
+                  </div>
+                </div>
+              </section>
             </div>
           </div>
           <div class="wbset-ftr">
@@ -4204,8 +5099,36 @@
       const $navVideo = panel.querySelector('#wbset-nav-video');
       const $navRecommend = panel.querySelector('#wbset-nav-recommend');
       const $navGame = panel.querySelector('#wbset-nav-game');
+      const $searchRelatedUsers = panel.querySelector(
+        '#wbset-search-related-users'
+      );
+      const $blacklistPosts = panel.querySelector('#wbset-bl-posts');
+      const $blacklistComments = panel.querySelector('#wbset-bl-comments');
+      const $blacklistSearch = panel.querySelector('#wbset-bl-search');
+      const $blacklistUserCards = panel.querySelector(
+        '#wbset-bl-user-cards'
+      );
+      const $blacklistInteractions = panel.querySelector(
+        '#wbset-bl-interactions'
+      );
+      const $hideAds = panel.querySelector('#wbset-hide-ads');
+      const $showSettingsButton = panel.querySelector(
+        '#wbset-show-settings-button'
+      );
       const $uids = panel.querySelector('#wbset-uids');
       const $count = panel.querySelector('#wbset-count');
+      const $uidMatchCount = panel.querySelector('#wbset-uid-match-count');
+      const $uidSearch = panel.querySelector('#wbset-uid-search');
+      const $uidList = panel.querySelector('#wbset-uid-list');
+      const $uidPage = panel.querySelector('#wbset-uid-page');
+      const $pageJumpInput = panel.querySelector(
+        '#wbset-page-jump-input'
+      );
+      const $pageJump = panel.querySelector('#wbset-page-jump');
+      const $uidPrev = panel.querySelector('#wbset-uid-prev');
+      const $uidNext = panel.querySelector('#wbset-uid-next');
+      let uidManagerPage = 1;
+      let uidManagerTotalPages = 1;
 
       function refreshCfgUI() {
         $hot.checked = !!CFG.hideHotSearch;
@@ -4219,20 +5142,171 @@
         $navVideo.checked = !!CFG.hideNavVideo;
         $navRecommend.checked = !!CFG.hideNavRecommend;
         $navGame.checked = CFG.hideNavGame !== false;
+        $searchRelatedUsers.checked = CFG.hideSearchRelatedUsers !== false;
+        $blacklistPosts.checked = CFG.hideBlacklistPosts !== false;
+        $blacklistComments.checked = CFG.hideBlacklistComments !== false;
+        $blacklistSearch.checked =
+          CFG.hideBlacklistSearchResults !== false;
+        $blacklistUserCards.checked =
+          CFG.hideBlacklistUserCards !== false;
+        $blacklistInteractions.checked =
+          CFG.hideBlacklistInteractions !== false;
+        $hideAds.checked = CFG.hideAds !== false;
+        $showSettingsButton.checked = CFG.showSettingsButton !== false;
       }
-      function refreshCount() {
-        $count.textContent = String(readBLSet().size);
+      function refreshUIDManager(options = {}) {
+        if (options.resetPage) uidManagerPage = 1;
+        const allUIDs = Array.from(readBLSet()).reverse();
+        const query = String($uidSearch.value || '').trim();
+        const matchingUIDs = query
+          ? allUIDs.filter((uid) => uid.includes(query))
+          : allUIDs;
+        const totalPages = Math.max(
+          1,
+          Math.ceil(matchingUIDs.length / UID_MANAGER_PAGE_SIZE)
+        );
+        uidManagerTotalPages = totalPages;
+        uidManagerPage = Math.min(Math.max(1, uidManagerPage), totalPages);
+
+        const pageStart = (uidManagerPage - 1) * UID_MANAGER_PAGE_SIZE;
+        const pageUIDs = matchingUIDs.slice(
+          pageStart,
+          pageStart + UID_MANAGER_PAGE_SIZE
+        );
+
+        $count.textContent = String(allUIDs.length);
+        $uidMatchCount.textContent = String(matchingUIDs.length);
+        $uidPage.textContent = `第 ${uidManagerPage} / ${totalPages} 页`;
+        $pageJumpInput.max = String(totalPages);
+        $uidPrev.disabled = uidManagerPage <= 1;
+        $uidNext.disabled = uidManagerPage >= totalPages;
+        $uidList.replaceChildren();
+
+        if (!pageUIDs.length) {
+          const empty = document.createElement('div');
+          empty.className = 'wbset-empty';
+          empty.textContent = query
+            ? `没有找到包含“${query}”的 UID`
+            : '本地黑名单中暂无 UID';
+          $uidList.appendChild(empty);
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        pageUIDs.forEach((uid) => {
+          const item = document.createElement('div');
+          item.className = 'wbset-uid-item';
+
+          const code = document.createElement('code');
+          code.textContent = uid;
+          const profile = document.createElement('a');
+          profile.className = 'wbset-uid-link';
+          profile.href = `https://weibo.com/u/${uid}`;
+          profile.target = '_blank';
+          profile.rel = 'noopener';
+          profile.textContent = '查看主页';
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'wbset-btn2 ghost wbset-uid-remove';
+          remove.setAttribute('data-wbset-remove-uid', uid);
+          remove.textContent = '删除';
+
+          item.append(code, profile, remove);
+          fragment.appendChild(item);
+        });
+        $uidList.appendChild(fragment);
+      }
+      function jumpToPage() {
+        const page = Number($pageJumpInput.value);
+        if (
+          !Number.isInteger(page) ||
+          page < 1 ||
+          page > uidManagerTotalPages
+        ) {
+          alert(`请输入 1 到 ${uidManagerTotalPages} 之间的页数`);
+          return;
+        }
+        uidManagerPage = page;
+        refreshUIDManager();
+      }
+      function closePanel({ reset = true } = {}) {
+        if (reset) CFG = loadCfg();
+        panel.style.display = 'none';
+      }
+      function setActivePage(pageName) {
+        panel.querySelectorAll('[data-wbset-page]').forEach((button) => {
+          const active = button.getAttribute('data-wbset-page') === pageName;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-selected', String(active));
+        });
+        panel.querySelectorAll('[data-wbset-section]').forEach((section) => {
+          section.classList.toggle(
+            'is-active',
+            section.getAttribute('data-wbset-section') === pageName
+          );
+        });
+        if (pageName === 'uids') refreshUIDManager();
       }
 
       refreshCfgUI();
-      refreshCount();
+      refreshUIDManager();
+
+      const nav = panel.querySelector('.wbset-nav');
+      nav.addEventListener('click', (e) => {
+        const button = e.target.closest('[data-wbset-page]');
+        if (!button) return;
+        setActivePage(button.getAttribute('data-wbset-page'));
+      });
+      nav.addEventListener('keydown', (e) => {
+        if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft'].includes(e.key)) {
+          return;
+        }
+        const buttons = Array.from(nav.querySelectorAll('[data-wbset-page]'));
+        const currentIndex = buttons.indexOf(document.activeElement);
+        if (currentIndex < 0) return;
+        e.preventDefault();
+        const direction =
+          e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1;
+        const next =
+          buttons[(currentIndex + direction + buttons.length) % buttons.length];
+        next.focus();
+        next.click();
+      });
 
       panel
         .querySelector('#wbset-refresh')
-        .addEventListener('click', refreshCount);
+        .addEventListener('click', () => refreshUIDManager());
       panel
         .querySelector('#wbset-reload')
         .addEventListener('click', () => location.reload());
+      $uidSearch.addEventListener('input', () => {
+        refreshUIDManager({ resetPage: true });
+      });
+      $pageJump.addEventListener('click', jumpToPage);
+      $pageJumpInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        jumpToPage();
+      });
+      $uidPrev.addEventListener('click', () => {
+        if (uidManagerPage <= 1) return;
+        uidManagerPage--;
+        refreshUIDManager();
+      });
+      $uidNext.addEventListener('click', () => {
+        uidManagerPage++;
+        refreshUIDManager();
+      });
+      $uidList.addEventListener('click', (e) => {
+        const button = e.target.closest('[data-wbset-remove-uid]');
+        if (!button) return;
+        const uid = button.getAttribute('data-wbset-remove-uid');
+        if (!/^\d{5,}$/.test(uid || '')) return;
+        if (!confirm(`确定从本地黑名单删除 UID ${uid} 吗？`)) return;
+        removeFromBL([uid]);
+        syncRuntimeBL({ restoreHidden: true });
+        refreshUIDManager();
+      });
       panel.querySelector('#wbset-export').addEventListener('click', () => {
         const count = exportBlacklist();
         alert(`✅ 已导出 ${count} 个 UID 到 JSON 文件`);
@@ -4243,7 +5317,7 @@
         try {
           const result = await importBlacklist(file, 'merge');
           syncRuntimeBL({ restoreHidden: false });
-          refreshCount();
+          refreshUIDManager();
           alert(
             `✅ 导入成功！\n` +
               `📂 文件导出时间：${result.exportTime}\n` +
@@ -4273,7 +5347,7 @@
         try {
           const result = await importBlacklist(file, 'replace');
           syncRuntimeBL({ restoreHidden: true });
-          refreshCount();
+          refreshUIDManager({ resetPage: true });
           alert(
               `✅ 替换成功！\n` +
               `📂 文件导出时间：${result.exportTime}\n` +
@@ -4295,7 +5369,7 @@
         try {
           const result = await window.WB_BL_SYNC.deltaSync();
           alert(`✅ 增量同步完成！新增 ${result.added} 个 UID`);
-          refreshCount();
+          refreshUIDManager();
         } catch (err) {
           alert(`❌ 同步失败：${err.message}`);
         }
@@ -4305,7 +5379,7 @@
         try {
           const result = await window.WB_BL_SYNC.syncPages(5);
           alert(`✅ 同步前5页完成！新增 ${result.added} 个 UID`);
-          refreshCount();
+          refreshUIDManager();
         } catch (err) {
           alert(`❌ 同步失败：${err.message}`);
         }
@@ -4316,7 +5390,7 @@
           const oldSize = window.WB_BL_SYNC.getCount();
           const newSize = await window.WB_BL_SYNC.fullSync();
           alert(`✅ 完整同步完成！新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`);
-          refreshCount();
+          refreshUIDManager();
         } catch (err) {
           alert(`❌ 同步失败：${err.message}`);
         }
@@ -4343,73 +5417,111 @@
 
         writeBLSet(new Set());
         syncRuntimeBL({ restoreHidden: true });
-        refreshCount();
+        refreshUIDManager({ resetPage: true });
         alert('✅ 已清空黑名单');
       });
 
       panel.querySelector('#wbset-bl-add').addEventListener('click', () => {
         const ids = parseUIDInput($uids.value);
         if (!ids.length) return alert('请输入有效的 UID');
-        const size = addToBL(ids);
+        const result = addToBL(ids);
         syncRuntimeBL({ restoreHidden: false });
-        refreshCount();
-        alert(`已加入 ${ids.length} 个 UID，当前缓存总数：${size}`);
-      });
-      panel.querySelector('#wbset-bl-remove').addEventListener('click', () => {
-        const ids = parseUIDInput($uids.value);
-        if (!ids.length) return alert('请输入有效的 UID');
-        const size = removeFromBL(ids);
-        syncRuntimeBL({ restoreHidden: true });
-        refreshCount();
+        $uids.value = '';
+        refreshUIDManager({ resetPage: true });
         alert(
-          `已从黑名单移除 ${ids.length} 个 UID，当前缓存总数：${size}`
+          `已处理 ${ids.length} 个 UID，新增 ${result.added} 个，当前缓存总数：${result.size}`
         );
       });
 
       panel.querySelector('#wbset-save').addEventListener('click', () => {
+        const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
+        const nextLatestTimeline = $latest.checked;
         CFG.hideHotSearch = $hot.checked;
         CFG.hideSuggestedPeople = $sug.checked;
         CFG.hideFollowRecommendations = $followRec.checked;
         CFG.hideCommonFunctions = $commonFunctions.checked;
         CFG.hideFanGroups = $fanGroups.checked;
         CFG.hideFrequentSuperTopics = $frequentSuperTopics.checked;
-        CFG.defaultLatestTimeline = $latest.checked;
+        CFG.defaultLatestTimeline = nextLatestTimeline;
         CFG.hideNavVideo = $navVideo.checked;
         CFG.hideNavRecommend = $navRecommend.checked;
         CFG.hideNavGame = $navGame.checked;
+        CFG.hideSearchRelatedUsers = $searchRelatedUsers.checked;
+        CFG.hideBlacklistPosts = $blacklistPosts.checked;
+        CFG.hideBlacklistComments = $blacklistComments.checked;
+        CFG.hideBlacklistSearchResults = $blacklistSearch.checked;
+        CFG.hideBlacklistUserCards = $blacklistUserCards.checked;
+        CFG.hideBlacklistInteractions = $blacklistInteractions.checked;
+        CFG.hideAds = $hideAds.checked;
+        CFG.showSettingsButton = $showSettingsButton.checked;
         delete CFG.hideNavVideoRecommend;
         saveCfg(CFG);
         // 同步更新 defaultLatest 到油猴菜单使用的存储
-        GM_setValue('defaultLatest', $latest.checked);
+        GM_setValue('defaultLatest', nextLatestTimeline);
+        const isMainWeiboHost = ['weibo.com', 'www.weibo.com'].includes(
+          location.hostname
+        );
+        const isHomeTimelineRoute =
+          location.pathname === '/' ||
+          location.pathname === '' ||
+          /^\/mygroups(?:\/|$)/.test(location.pathname);
+        // 从"最新微博"页关闭开关时，不能原地刷新 /mygroups；
+        // 回到首页后，关闭状态会保留原生首页，开启状态则重新切到最新微博。
+        if (
+          previousLatestTimeline !== nextLatestTimeline &&
+          isMainWeiboHost &&
+          isHomeTimelineRoute
+        ) {
+          location.assign(`${location.origin}/`);
+          return;
+        }
         // 刷新页面以确保布局正确更新
         location.reload();
       });
       panel.querySelector('#wbset-cancel').addEventListener('click', () => {
-        CFG = loadCfg();
-        panel.style.display = 'none';
+        closePanel();
       });
       panel.querySelector('#wbset-close').addEventListener('click', () => {
-        CFG = loadCfg();
-        panel.style.display = 'none';
+        closePanel();
       });
       panel.addEventListener('click', (e) => {
         if (e.target === panel) {
-          panel.style.display = 'none';
+          closePanel();
         }
+      });
+      panel.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closePanel();
+      });
+      panel.addEventListener('wbset:open', () => {
+        CFG = loadCfg();
+        refreshCfgUI();
+        refreshUIDManager();
       });
     }
     panel.style.display = 'flex';
+    panel.dispatchEvent(new CustomEvent('wbset:open'));
   }
 
   function initLauncher() {
-    if (document.querySelector('.wbset-btn')) return;
     ensureStyles();
-    const btn = document.createElement('button');
-    btn.className = 'wbset-btn';
-    btn.textContent = '设置';
-    btn.title = '脚本设置';
-    btn.addEventListener('click', openPanel);
-    document.documentElement.appendChild(btn);
+    const existingButton = document.querySelector('.wbset-btn');
+    if (CFG.showSettingsButton === false) {
+      existingButton?.remove();
+    } else if (!existingButton) {
+      const btn = document.createElement('button');
+      btn.className = 'wbset-btn';
+      btn.type = 'button';
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      `;
+      btn.title = '微博增强设置';
+      btn.setAttribute('aria-label', '打开微博增强设置');
+      btn.addEventListener('click', openPanel);
+      document.documentElement.appendChild(btn);
+    }
     if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('打开脚本设置', openPanel);
     }
@@ -4419,4 +5531,4 @@
     document.addEventListener('DOMContentLoaded', initLauncher);
   else initLauncher();
 })();
-/* === /Settings v4 === */
+/* === /Settings v5 === */
