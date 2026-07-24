@@ -1,9 +1,9 @@
 ﻿// ==UserScript==
 // @sandbox      raw
-// @name         微博按时间线显示|隐藏黑名单用户所有言论|屏蔽热搜
+// @name         微博按时间线显示|隐藏本地屏蔽用户内容|屏蔽热搜
 // @namespace    https://github.com/DanielZenFlow
 // @version      2.0.0
-// @description  增强版：模仿早期Twitter的时间线展示。可自动切换到"最新微博"；全接口劫持并隐藏黑名单用户所有言论与转发；隐藏除"最新微博"外导航项、微博热搜、游戏入口、推荐关注等模块；单一防抖MutationObserver；SPA路由清理；手动更新黑名单功能；时间线恢复启用时屏蔽"全部关注"接口返回内容；新增全量同步与五页同步黑名单菜单。
+// @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @author       DanielZenFlow
 // @license      MIT
 // @homepage     https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone
@@ -16,6 +16,9 @@
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        GM_registerMenuCommand
 // @grant        GM_openInTab
 // @run-at       document-start
@@ -31,6 +34,335 @@
 (function () {
   'use strict';
 
+  const WB_INTERNAL = Object.create(null);
+  const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
+  const WB_CONFIG_KEY = 'cfg';
+  const WB_CONFIG_BACKUP_KEY = 'cfg_recovery_backup';
+  const WB_CONFIG_SCHEMA_VERSION = 1;
+  const WB_CONFIG_DEFAULTS = Object.freeze({
+    hideHotSearch: true,
+    hideSuggestedPeople: true,
+    hideFollowRecommendations: true,
+    hideCommonFunctions: true,
+    hideFanGroups: true,
+    hideFrequentSuperTopics: true,
+    hideNavVideo: false,
+    hideNavRecommend: false,
+    hideNavGame: true,
+    defaultLatestTimeline: true,
+    hideSearchRelatedUsers: true,
+    hideBlacklistPosts: true,
+    hideBlacklistComments: true,
+    hideBlacklistSearchResults: true,
+    hideBlacklistUserCards: true,
+    hideBlacklistInteractions: true,
+    confirmBeforeBlocking: true,
+    hideAds: true,
+    showSettingsButton: true,
+  });
+  const WB_CONFIG_BOOLEAN_KEYS = Object.keys(WB_CONFIG_DEFAULTS);
+  const WB_RUNTIME_METRICS = {
+    config: {
+      schemaVersion: WB_CONFIG_SCHEMA_VERSION,
+      migrations: 0,
+      recoveries: 0,
+      futureSchema: null,
+    },
+    relay: {
+      active: 0,
+      requests: 0,
+      successes: 0,
+      failures: 0,
+      timeouts: 0,
+      transport: 'value-change-listener',
+    },
+  };
+  let wbConfigCacheSignature = null;
+  let wbConfigCacheValue = null;
+
+  function normalizeStoredConfig(rawCfg) {
+    const raw =
+      rawCfg && typeof rawCfg === 'object' && !Array.isArray(rawCfg)
+        ? rawCfg
+        : {};
+    const normalized = Object.assign({}, raw);
+    const storedSchema = Number(raw.schemaVersion);
+
+    if (raw.hideNavVideoRecommend === true) {
+      if (raw.hideNavVideo === undefined) normalized.hideNavVideo = true;
+      if (raw.hideNavRecommend === undefined) normalized.hideNavRecommend = true;
+    }
+    delete normalized.hideNavVideoRecommend;
+
+    WB_CONFIG_BOOLEAN_KEYS.forEach((key) => {
+      normalized[key] =
+        typeof normalized[key] === 'boolean'
+          ? normalized[key]
+          : WB_CONFIG_DEFAULTS[key];
+    });
+    normalized.schemaVersion =
+      Number.isInteger(storedSchema) &&
+      storedSchema > WB_CONFIG_SCHEMA_VERSION
+        ? storedSchema
+        : WB_CONFIG_SCHEMA_VERSION;
+    return normalized;
+  }
+
+  function readStoredConfig() {
+    const getValue =
+      typeof GM_getValue === 'function' ? GM_getValue : () => '{}';
+    const setValue =
+      typeof GM_setValue === 'function' ? GM_setValue : () => {};
+    const stored = getValue(WB_CONFIG_KEY, '{}');
+    let storedSignature = '';
+    try {
+      storedSignature =
+        typeof stored === 'string' ? stored : JSON.stringify(stored);
+    } catch {
+      storedSignature = String(stored);
+    }
+    if (
+      wbConfigCacheValue &&
+      storedSignature === wbConfigCacheSignature
+    ) {
+      return { ...wbConfigCacheValue };
+    }
+    let parsed = {};
+    let recovered = false;
+
+    try {
+      parsed =
+        typeof stored === 'string'
+          ? JSON.parse(stored || '{}')
+          : stored && typeof stored === 'object'
+            ? stored
+            : {};
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        throw new TypeError('配置根节点必须是对象');
+      }
+    } catch {
+      recovered = true;
+      WB_RUNTIME_METRICS.config.recoveries++;
+      setValue(WB_CONFIG_BACKUP_KEY, {
+        value: stored,
+        recoveredAt: Date.now(),
+      });
+      parsed = {};
+    }
+
+    const storedSchema = Number(parsed.schemaVersion) || 0;
+    const normalized = normalizeStoredConfig(parsed);
+    if (storedSchema > WB_CONFIG_SCHEMA_VERSION) {
+      WB_RUNTIME_METRICS.config.futureSchema = storedSchema;
+      wbConfigCacheSignature = storedSignature;
+      wbConfigCacheValue = normalized;
+      return { ...normalized };
+    }
+
+    const serialized = JSON.stringify(normalized);
+    const needsMigration =
+      recovered ||
+      storedSchema !== WB_CONFIG_SCHEMA_VERSION ||
+      serialized !== JSON.stringify(parsed);
+    if (needsMigration) {
+      setValue(WB_CONFIG_KEY, serialized);
+      WB_RUNTIME_METRICS.config.migrations++;
+    }
+    wbConfigCacheSignature = needsMigration ? serialized : storedSignature;
+    wbConfigCacheValue = normalized;
+    return { ...normalized };
+  }
+
+  function writeStoredConfig(cfg) {
+    const normalized = normalizeStoredConfig(cfg);
+    const serialized = JSON.stringify(normalized);
+    if (typeof GM_setValue === 'function') {
+      GM_setValue(WB_CONFIG_KEY, serialized);
+    }
+    wbConfigCacheSignature = serialized;
+    wbConfigCacheValue = normalized;
+    return { ...normalized };
+  }
+
+  WB_INTERNAL.config = Object.freeze({
+    key: WB_CONFIG_KEY,
+    schemaVersion: WB_CONFIG_SCHEMA_VERSION,
+    defaults: WB_CONFIG_DEFAULTS,
+    normalize: normalizeStoredConfig,
+    read: readStoredConfig,
+    write: writeStoredConfig,
+  });
+
+  const WB_DOM_RUNTIME = (() => {
+    const mutationSubscribers = new Map();
+    const routeSubscribers = new Map();
+    const scheduledTasks = new Map();
+    const stats = {
+      mutationBatches: 0,
+      mutationRecords: 0,
+      mutationCallbacks: 0,
+      routeChanges: 0,
+      scheduledTasks: 0,
+      completedTasks: 0,
+    };
+    let observer = null;
+    let attachTimer = 0;
+
+    const reportSubscriberError = (channel, error) => {
+      console.warn(`[WB-BL] DOM 调度器订阅回调失败：${channel}`, error);
+    };
+
+    function ensureObserver() {
+      if (observer || typeof MutationObserver !== 'function') return;
+      const root = document.documentElement;
+      if (!root) {
+        if (!attachTimer) {
+          attachTimer = setTimeout(() => {
+            attachTimer = 0;
+            ensureObserver();
+          }, 25);
+        }
+        return;
+      }
+      observer = new MutationObserver((records) => {
+        stats.mutationBatches++;
+        stats.mutationRecords += records.length;
+        mutationSubscribers.forEach((callback, channel) => {
+          try {
+            callback(records);
+            stats.mutationCallbacks++;
+          } catch (error) {
+            reportSubscriberError(channel, error);
+          }
+        });
+      });
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+      });
+    }
+
+    function subscribeMutations(channel, callback) {
+      mutationSubscribers.set(channel, callback);
+      ensureObserver();
+      return () => mutationSubscribers.delete(channel);
+    }
+
+    function collectAddedRoots(records) {
+      const candidates = new Set();
+      records.forEach((record) => {
+        record.addedNodes?.forEach((node) => {
+          if (node?.nodeType === 1) candidates.add(node);
+        });
+      });
+      return Array.from(candidates).filter((node) => {
+        let parent = node.parentElement;
+        while (parent) {
+          if (candidates.has(parent)) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+    }
+
+    function emitRouteChange(reason) {
+      stats.routeChanges++;
+      routeSubscribers.forEach((callback, channel) => {
+        try {
+          callback(reason);
+        } catch (error) {
+          reportSubscriberError(channel, error);
+        }
+      });
+    }
+
+    function subscribeRoute(channel, callback) {
+      routeSubscribers.set(channel, callback);
+      return () => routeSubscribers.delete(channel);
+    }
+
+    function schedule(channel, callback, delay = 0) {
+      const normalizedDelay = Math.max(0, Number(delay) || 0);
+      const dueAt = Date.now() + normalizedDelay;
+      const current = scheduledTasks.get(channel);
+      if (current) {
+        current.callback = callback;
+        if (dueAt >= current.dueAt) return;
+        clearTimeout(current.timer);
+      }
+
+      const task = {
+        callback,
+        dueAt,
+        timer: 0,
+      };
+      task.timer = setTimeout(() => {
+        scheduledTasks.delete(channel);
+        stats.completedTasks++;
+        try {
+          task.callback();
+        } catch (error) {
+          reportSubscriberError(channel, error);
+        }
+      }, normalizedDelay);
+      scheduledTasks.set(channel, task);
+      stats.scheduledTasks++;
+    }
+
+    function cancel(channel) {
+      const task = scheduledTasks.get(channel);
+      if (!task) return false;
+      clearTimeout(task.timer);
+      scheduledTasks.delete(channel);
+      return true;
+    }
+
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+    history.pushState = function (...args) {
+      const result = Reflect.apply(originalPushState, this, args);
+      emitRouteChange('pushState');
+      return result;
+    };
+    history.replaceState = function (...args) {
+      const result = Reflect.apply(originalReplaceState, this, args);
+      emitRouteChange('replaceState');
+      return result;
+    };
+    window.addEventListener('popstate', () => emitRouteChange('popstate'));
+    window.addEventListener('hashchange', () => emitRouteChange('hashchange'));
+    window.addEventListener(
+      'beforeunload',
+      () => {
+        observer?.disconnect();
+        scheduledTasks.forEach((task) => clearTimeout(task.timer));
+        scheduledTasks.clear();
+      },
+      { once: true }
+    );
+
+    return Object.freeze({
+      subscribeMutations,
+      subscribeRoute,
+      collectAddedRoots,
+      schedule,
+      cancel,
+      getStats: () => ({
+        ...stats,
+        mutationSubscribers: mutationSubscribers.size,
+        routeSubscribers: routeSubscribers.size,
+        pendingTasks: scheduledTasks.size,
+      }),
+    });
+  })();
+
+  WB_INTERNAL.dom = WB_DOM_RUNTIME;
+
+  (function () {
+  'use strict';
+
   const SCRIPT_VERSION = '2.0.0';
 
   // === GM_* 接口封装 ===
@@ -38,6 +370,16 @@
     typeof GM_getValue !== 'undefined' ? GM_getValue : () => {};
   const _GM_setValue =
     typeof GM_setValue !== 'undefined' ? GM_setValue : () => {};
+  const _GM_deleteValue =
+    typeof GM_deleteValue !== 'undefined' ? GM_deleteValue : null;
+  const _GM_addValueChangeListener =
+    typeof GM_addValueChangeListener !== 'undefined'
+      ? GM_addValueChangeListener
+      : null;
+  const _GM_removeValueChangeListener =
+    typeof GM_removeValueChangeListener !== 'undefined'
+      ? GM_removeValueChangeListener
+      : null;
   const _GM_registerMenuCommand =
     typeof GM_registerMenuCommand !== 'undefined'
       ? GM_registerMenuCommand
@@ -45,11 +387,369 @@
   const _GM_openInTab =
     typeof GM_openInTab !== 'undefined' ? GM_openInTab : null;
 
+  let centeredConfirmQueue = Promise.resolve();
+
+  function ensureCenteredConfirmStyles() {
+    if (document.getElementById('wb-retro-confirm-style')) return;
+    const style = document.createElement('style');
+    style.id = 'wb-retro-confirm-style';
+    style.textContent = `
+      .wb-retro-confirm-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, .46);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .wb-retro-confirm-dialog {
+        width: min(420px, calc(100vw - 40px));
+        box-sizing: border-box;
+        padding: 22px;
+        color-scheme: light;
+        color: #171717;
+        background: #fff;
+        border: 1px solid rgba(0, 0, 0, .08);
+        border-radius: 14px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, .3);
+      }
+      .wb-retro-confirm-title {
+        margin: 0 0 10px;
+        font-size: 17px;
+        line-height: 1.4;
+        font-weight: 650;
+      }
+      .wb-retro-confirm-message {
+        margin: 0;
+        color: #64646c;
+        font-size: 13px;
+        line-height: 1.65;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: min(58vh, 460px);
+        padding-right: 4px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: #b7b7bd transparent;
+      }
+      .wb-retro-confirm-message::-webkit-scrollbar {
+        width: 8px;
+      }
+      .wb-retro-confirm-message::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .wb-retro-confirm-message::-webkit-scrollbar-thumb {
+        background: #b7b7bd;
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background-clip: padding-box;
+      }
+      .wb-retro-confirm-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 14px;
+        color: #315efb;
+        font-size: 13px;
+        line-height: 1.4;
+        text-decoration: none;
+      }
+      .wb-retro-confirm-link:hover {
+        text-decoration: underline;
+      }
+      .wb-retro-confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 9px;
+        margin-top: 20px;
+      }
+      .wb-retro-confirm-button {
+        min-width: 72px;
+        padding: 8px 13px;
+        border: 1px solid #dedee3;
+        border-radius: 8px;
+        color: #242424;
+        background: #fff;
+        font: 500 13px/1.3 inherit;
+        cursor: pointer;
+      }
+      .wb-retro-confirm-button:hover {
+        background: #f5f5f7;
+      }
+      .wb-retro-confirm-button.is-primary {
+        border-color: #202020;
+        color: #fff;
+        background: #202020;
+      }
+      .wb-retro-confirm-button.is-danger {
+        border-color: #c9362b;
+        color: #fff;
+        background: #c9362b;
+      }
+      @media (prefers-color-scheme: dark) {
+        .wb-retro-confirm-dialog {
+          color-scheme: dark;
+          color: #f1f1f1;
+          background: #202020;
+          border-color: rgba(255, 255, 255, .12);
+        }
+        .wb-retro-confirm-message {
+          color: #aaaab2;
+          scrollbar-color: #66666d transparent;
+        }
+        .wb-retro-confirm-message::-webkit-scrollbar-thumb {
+          background: #66666d;
+          border-color: transparent;
+          background-clip: padding-box;
+        }
+        .wb-retro-confirm-link {
+          color: #8eabff;
+        }
+        .wb-retro-confirm-button {
+          color: #f1f1f1;
+          background: #29292c;
+          border-color: #424247;
+        }
+        .wb-retro-confirm-button:hover {
+          background: #343438;
+        }
+        .wb-retro-confirm-button.is-primary {
+          color: #171717;
+          background: #f1f1f1;
+          border-color: #f1f1f1;
+        }
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function createCenteredConfirm(options = {}) {
+    ensureCenteredConfirmStyles();
+    const title = String(options.title || '请确认');
+    const message = String(options.message || '');
+    const confirmText = String(options.confirmText || '确定');
+    const cancelText = String(options.cancelText || '取消');
+
+    return new Promise((resolve) => {
+      const previousFocus =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      const overlay = document.createElement('div');
+      overlay.className = 'wb-retro-confirm-overlay';
+
+      const dialog = document.createElement('div');
+      dialog.className = 'wb-retro-confirm-dialog';
+      dialog.setAttribute('role', 'alertdialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-labelledby', 'wb-retro-confirm-title');
+      dialog.setAttribute('aria-describedby', 'wb-retro-confirm-message');
+
+      const titleElement = document.createElement('h2');
+      titleElement.id = 'wb-retro-confirm-title';
+      titleElement.className = 'wb-retro-confirm-title';
+      titleElement.textContent = title;
+
+      const messageElement = document.createElement('p');
+      messageElement.id = 'wb-retro-confirm-message';
+      messageElement.className = 'wb-retro-confirm-message';
+      messageElement.textContent = message;
+
+      let linkElement = null;
+      if (options.linkText && options.linkURL) {
+        linkElement = document.createElement('a');
+        linkElement.className = 'wb-retro-confirm-link';
+        linkElement.href = String(options.linkURL);
+        linkElement.target = '_blank';
+        linkElement.rel = 'noopener noreferrer';
+        linkElement.textContent = `${String(options.linkText)} ↗`;
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'wb-retro-confirm-actions';
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.className = 'wb-retro-confirm-button';
+      cancelButton.textContent = cancelText;
+      const confirmButton = document.createElement('button');
+      confirmButton.type = 'button';
+      confirmButton.className = `wb-retro-confirm-button ${
+        options.danger ? 'is-danger' : 'is-primary'
+      }`;
+      confirmButton.textContent = confirmText;
+      if (!options.hideCancel) actions.appendChild(cancelButton);
+      actions.appendChild(confirmButton);
+      dialog.append(titleElement, messageElement);
+      if (linkElement) dialog.appendChild(linkElement);
+      dialog.appendChild(actions);
+      overlay.appendChild(dialog);
+
+      let settled = false;
+      const finish = (confirmed) => {
+        if (settled) return;
+        settled = true;
+        overlay.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
+        resolve(confirmed);
+      };
+
+      cancelButton.addEventListener('click', () => finish(false));
+      confirmButton.addEventListener('click', () => finish(true));
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) finish(false);
+      });
+      overlay.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const buttons = options.hideCancel
+          ? [confirmButton]
+          : [cancelButton, confirmButton];
+        const currentIndex = buttons.indexOf(document.activeElement);
+        const direction = event.shiftKey ? -1 : 1;
+        const target =
+          buttons[
+            (Math.max(0, currentIndex) + direction + buttons.length) %
+              buttons.length
+          ];
+        event.preventDefault();
+        target.focus();
+      });
+
+      (document.body || document.documentElement).appendChild(overlay);
+      (options.hideCancel ? confirmButton : cancelButton).focus();
+    });
+  }
+
+  function showCenteredConfirm(options = {}) {
+    const run = () => createCenteredConfirm(options);
+    const result = centeredConfirmQueue.then(run, run);
+    centeredConfirmQueue = result.catch(() => false);
+    return result;
+  }
+
+  WB_INTERNAL.confirm = showCenteredConfirm;
+
+  function ensureNotificationStyles() {
+    if (document.getElementById('wb-retro-notice-style')) return;
+    const style = document.createElement('style');
+    style.id = 'wb-retro-notice-style';
+    style.textContent = `
+      .wb-retro-notice-stack {
+        position: fixed;
+        top: 18px;
+        left: 50%;
+        z-index: 1000002;
+        display: flex;
+        width: min(440px, calc(100vw - 32px));
+        flex-direction: column;
+        gap: 8px;
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+      .wb-retro-notice {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 11px 36px 11px 14px;
+        border: 1px solid rgba(0, 0, 0, .1);
+        border-left: 4px solid #1b74e4;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, .97);
+        color: #222;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+        font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+        pointer-events: auto;
+        animation: wb-retro-notice-in .16s ease-out;
+      }
+      .wb-retro-notice.is-success { border-left-color: #168647; }
+      .wb-retro-notice.is-error { border-left-color: #c9362b; }
+      .wb-retro-notice.is-info { border-left-color: #1b74e4; }
+      .wb-retro-notice-close {
+        position: absolute;
+        top: 7px;
+        right: 9px;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font: 18px/24px Arial, sans-serif;
+        opacity: .62;
+      }
+      .wb-retro-notice-close:hover { background: rgba(0, 0, 0, .07); opacity: 1; }
+      @keyframes wb-retro-notice-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @media (prefers-color-scheme: dark) {
+        .wb-retro-notice {
+          border-color: rgba(255, 255, 255, .13);
+          background: rgba(35, 35, 35, .97);
+          color: #f1f1f1;
+        }
+        .wb-retro-notice-close:hover { background: rgba(255, 255, 255, .1); }
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function showNotification(message, options = {}) {
+    const mount = () => {
+      ensureNotificationStyles();
+      let stack = document.querySelector('.wb-retro-notice-stack');
+      if (!stack) {
+        stack = document.createElement('div');
+        stack.className = 'wb-retro-notice-stack';
+        stack.setAttribute('role', 'status');
+        stack.setAttribute('aria-live', 'polite');
+        (document.body || document.documentElement).appendChild(stack);
+      }
+
+      const notice = document.createElement('div');
+      notice.className = `wb-retro-notice is-${options.type || 'info'}`;
+      notice.style.position = 'relative';
+      notice.textContent = String(message || '');
+
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'wb-retro-notice-close';
+      close.setAttribute('aria-label', '关闭通知');
+      close.textContent = '×';
+      const dismiss = () => notice.remove();
+      close.addEventListener('click', dismiss);
+      notice.appendChild(close);
+      stack.appendChild(notice);
+
+      const duration = Math.max(1500, Number(options.duration) || 3600);
+      setTimeout(dismiss, duration);
+      return notice;
+    };
+
+    if (document.documentElement) return mount();
+    setTimeout(mount, 0);
+    return null;
+  }
+
+  WB_INTERNAL.notify = showNotification;
+
   // === Star提醒配置 ===
   const STAR_CONFIG = {
     FIRST_RUN_KEY: 'WB_FULL_FIRST_RUN',
     STAR_REMINDER_DISABLED_KEY: 'WB_FULL_STAR_REMINDER_DISABLED',
     LAST_STAR_REMINDER_TIME_KEY: 'WB_FULL_LAST_STAR_REMINDER_TIME',
+    STAR_REMINDER_STAGE_KEY: 'WB_FULL_STAR_REMINDER_STAGE',
     // Star提醒间隔：首次安装 → 7天后 → 30天后 → 90天后 → 不再提醒
     STAR_REMINDER_INTERVALS: [0, 7, 30, 90], // 天数
   };
@@ -80,14 +780,15 @@
       // 延迟检测，有些浏览器需要时间
       setTimeout(() => {
         if (!newWindow || newWindow.closed) {
-          alert(
+          showNotification(
             '🚫 弹窗被浏览器拦截了！\n\n' +
               '📋 GitHub链接：' +
               url +
               '\n\n' +
               '💡 解决方法：\n' +
               '1. 复制上面的链接到新标签页\n' +
-              '2. 或者允许此网站的弹窗权限'
+              '2. 或者允许此网站的弹窗权限',
+            { type: 'error', duration: 10000 }
           );
         }
       }, 100);
@@ -109,61 +810,83 @@
       STAR_CONFIG.LAST_STAR_REMINDER_TIME_KEY,
       0
     );
+    const storedStage = _GM_getValue(
+      STAR_CONFIG.STAR_REMINDER_STAGE_KEY,
+      null
+    );
+    const parsedStage = Number(storedStage);
+    const currentStage =
+      storedStage === null || storedStage === undefined
+        ? lastReminderTime === 0
+          ? 0
+          : 1
+        : Number.isInteger(parsedStage)
+          ? Math.max(0, parsedStage)
+          : 0;
+    if (currentStage >= STAR_CONFIG.STAR_REMINDER_INTERVALS.length) {
+      _GM_setValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, true);
+      return;
+    }
     const daysSinceLastReminder =
       (now - lastReminderTime) / (1000 * 60 * 60 * 24);
-
-    // 检查是否需要提醒
-    let shouldRemind = false;
-    let currentInterval = 0;
-
-    if (lastReminderTime === 0) {
-      // 首次运行
-      shouldRemind = true;
-    } else {
-      // 找到当前应该的间隔
-      for (let i = 1; i < STAR_CONFIG.STAR_REMINDER_INTERVALS.length; i++) {
-        if (daysSinceLastReminder >= STAR_CONFIG.STAR_REMINDER_INTERVALS[i]) {
-          currentInterval = i;
-          shouldRemind = true;
-        }
-      }
-    }
+    const requiredDays = STAR_CONFIG.STAR_REMINDER_INTERVALS[currentStage];
+    const shouldRemind =
+      lastReminderTime === 0 || daysSinceLastReminder >= requiredDays;
 
     if (shouldRemind) {
-      setTimeout(() => {
-        showStarReminder(currentInterval);
+      setTimeout(async () => {
+        if (
+          _GM_getValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, false)
+        ) {
+          return;
+        }
+        await showStarReminder(currentStage);
         _GM_setValue(STAR_CONFIG.LAST_STAR_REMINDER_TIME_KEY, now);
+        const nextStage = currentStage + 1;
+        _GM_setValue(STAR_CONFIG.STAR_REMINDER_STAGE_KEY, nextStage);
+        if (nextStage >= STAR_CONFIG.STAR_REMINDER_INTERVALS.length) {
+          _GM_setValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, true);
+        }
       }, 3000); // 3秒后弹出
     }
   }
 
   // === 显示Star提醒 ===
-  function showStarReminder(intervalIndex) {
+  async function showStarReminder(intervalIndex) {
     const isFirstTime = intervalIndex === 0;
     const message = isFirstTime
       ? '🎉 感谢使用 Weibo Retro Twitter-Style Clone！\n\n如果这个工具对您有帮助，请考虑给我们点个 ⭐ Star！'
       : '⭐ 再次感谢使用我们的工具！\n\n如果觉得有用，请考虑给项目点个 Star 支持一下！';
 
-    const result = confirm(
-      `${message}\n\n` +
-        `点击"确定"打开 GitHub 页面\n` +
-        `点击"取消"${isFirstTime ? '稍后提醒' : '不再提醒'}`
-    );
+    const result = await showCenteredConfirm({
+      title: '支持项目',
+      message:
+        `${message}\n\n` +
+        `点击“打开 GitHub”访问项目页面；点击“${
+          isFirstTime ? '稍后提醒' : '不再提醒'
+        }”关闭。`,
+      confirmText: '打开 GitHub',
+      cancelText: isFirstTime ? '稍后提醒' : '不再提醒',
+    });
 
     if (result) {
       openGitHub();
 
       // 30秒后询问是否已给star
-      setTimeout(() => {
-        const hasStarred = confirm(
-          '感谢访问我们的 GitHub 页面！\n\n' +
-            '如果您已经给了 ⭐ Star，点击"确定"我们将不再提醒\n' +
-            '点击"取消"我们稍后再提醒'
-        );
+      setTimeout(async () => {
+        const hasStarred = await showCenteredConfirm({
+          title: '是否已经 Star？',
+          message:
+            '感谢访问 GitHub 项目页面。\n\n如果已经给了 ⭐ Star，可以关闭后续提醒。',
+          confirmText: '已 Star，不再提醒',
+          cancelText: '稍后提醒',
+        });
 
         if (hasStarred) {
           _GM_setValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, true);
-          alert('🎉 感谢您的 Star！我们将不再显示提醒。');
+          showNotification('🎉 感谢您的 Star！我们将不再显示提醒。', {
+            type: 'success',
+          });
         }
       }, 30000);
     } else if (!isFirstTime) {
@@ -174,33 +897,36 @@
 
   // === 首次运行检查 ===
   function checkFirstRun() {
-    if (!canUseSettingApi()) return;
+    if (!canUseSettingApi()) return false;
 
     const isFirstRun = !_GM_getValue(STAR_CONFIG.FIRST_RUN_KEY, false);
 
     if (isFirstRun) {
-      setTimeout(() => {
-        const shouldSync = confirm(
-          '🎉 欢迎使用 Weibo Retro Twitter-Style Clone！\n\n' +
-            '首次使用建议进行全量黑名单同步以确保最佳效果。\n' +
-            '这个过程可能需要几分钟时间。\n\n' +
-            '点击"确定"现在同步，"取消"稍后手动同步'
-        );
+      setTimeout(async () => {
+        const shouldSync = await showCenteredConfirm({
+          title: '欢迎使用',
+          message:
+            '首次使用建议同步完整的新浪微博官方黑名单，并合并到本地屏蔽列表。\n\n这个过程可能需要几分钟。',
+          confirmText: '立即同步',
+          cancelText: '稍后处理',
+        });
 
         if (shouldSync) {
           // 调用全量同步（这里使用现有的全量同步函数）
           (async () => {
             try {
               const oldSize = BL.size;
-              BL = await fullSync();
-              refreshBlockedDOMAfterBLChange({ restoreHidden: true });
-              alert(
-                `🎉 黑名单同步完成！共获取到 ${BL.size} 个用户（新增 ${
-                  BL.size - oldSize
-                }）`
+              const newSize = await WB_BL_SYNC_BRIDGE.fullSync();
+              showNotification(
+                `🎉 新浪微博官方黑名单同步完成！本地屏蔽列表现有 ${newSize} 个用户（新增 ${
+                  newSize - oldSize
+                }）`,
+                { type: 'success', duration: 5000 }
               );
             } catch (error) {
-              alert('❌ 同步过程中出现错误，请稍后手动同步');
+              showNotification('❌ 新浪微博官方黑名单同步失败，请稍后手动同步', {
+                type: 'error',
+              });
               console.error('First run sync error:', error);
             }
           })();
@@ -208,17 +934,14 @@
       }, 2000);
 
       _GM_setValue(STAR_CONFIG.FIRST_RUN_KEY, true);
+      return true;
     }
+    return false;
   }
 
   // 读取时间线默认设置（不再创建油猴菜单，统一在设置面板管理）
   function getTimelineDefault() {
-    try {
-      const cfg = JSON.parse(_GM_getValue('cfg', '{}'));
-      return cfg.defaultLatestTimeline !== false; // 默认 true
-    } catch {
-      return true;
-    }
+    return WB_INTERNAL.config.read().defaultLatestTimeline !== false;
   }
   const timelineDefault = {
     get value() {
@@ -230,8 +953,6 @@
   // 策略：1. 启用时屏蔽"全部关注"接口
   //       2. DOM层面同步Tab选中状态
   (function forceLatestTab() {
-    if (!timelineDefault.value) return;
-
     const isHomePage = () => {
       return (
         ['weibo.com', 'www.weibo.com'].includes(location.hostname) &&
@@ -241,13 +962,14 @@
 
     // DOM层：确保Tab UI状态正确（点击切换）
     const syncTabUI = () => {
+      if (!timelineDefault.value) return;
       const btn = document.querySelector('[role="link"][title="最新微博"]');
       if (btn && btn.getAttribute('aria-selected') !== 'true') {
         btn.click();
       }
     };
 
-    if (isHomePage()) {
+    if (isHomePage() && timelineDefault.value) {
       // 使用 MutationObserver 监听Tab出现后立即点击（比setTimeout更快）
       const tabObserver = new MutationObserver((mutations, obs) => {
         const btn = document.querySelector('[role="link"][title="最新微博"]');
@@ -286,33 +1008,24 @@
         currentPath = newPath;
 
         if (isNowHome) {
-          // 延迟等待Tab渲染，然后同步UI
-          setTimeout(syncTabUI, 100);
-          setTimeout(syncTabUI, 300);
-          setTimeout(syncTabUI, 600);
+          WB_INTERNAL.dom.schedule('timeline-tab-primary', syncTabUI, 100);
+          WB_INTERNAL.dom.schedule('timeline-tab-followup', syncTabUI, 450);
         }
       }
     };
 
-    window.addEventListener('popstate', handleRouteChange);
-    const origPushState = history.pushState;
-    history.pushState = function (...args) {
-      origPushState.apply(this, args);
-      handleRouteChange();
-    };
-    const origReplaceState = history.replaceState;
-    history.replaceState = function (...args) {
-      origReplaceState.apply(this, args);
-      handleRouteChange();
-    };
+    WB_INTERNAL.dom.subscribeRoute('timeline-default', handleRouteChange);
   })();
 
-  // === 黑名单数据与同步 ===
+  // === 本地屏蔽列表与新浪微博官方黑名单同步 ===
   const UID_KEY = 'WB_BL_list'; // 本地存 UID
+  const UID_EXCLUSION_KEY = 'WB_BL_local_exclusions';
   const OFFICIAL_BLOCK_REQUEST_KEY = 'WB_BL_official_block_request';
   const OFFICIAL_BLOCK_RESPONSE_KEY = 'WB_BL_official_block_response';
   const OFFICIAL_BLOCK_RELAY_PARAM = 'wb_retro_official_block';
   const OFFICIAL_BLOCK_RELAY_TIMEOUT_MS = 15000;
+  // 仅用于旧脚本管理器检查跨标签页写回结果，不会发起微博接口请求。
+  const OFFICIAL_BLOCK_RELAY_COMPAT_POLL_MS = 250;
   const CONTENT_FILTER_DEFAULTS = {
     hideBlacklistPosts: true,
     hideBlacklistComments: true,
@@ -322,10 +1035,7 @@
     hideAds: true,
   };
   const CONTENT_FILTER_CFG = (() => {
-    let cfg = {};
-    try {
-      cfg = JSON.parse(_GM_getValue('cfg', '{}') || '{}');
-    } catch {}
+    const cfg = WB_INTERNAL.config.read();
     return Object.assign({}, CONTENT_FILTER_DEFAULTS, cfg);
   })();
   const BLOCKED_CONTENT_HIDE_ATTR = 'data-__wb_bl_hidden_by_userscript';
@@ -333,6 +1043,14 @@
   const BLOCKED_CONTENT_HIDE_SELECTOR = `[${BLOCKED_CONTENT_HIDE_ATTR}]`;
   const HIDDEN_AD_ATTR = 'data-__wb_ad_hidden_by_userscript';
   const HIDDEN_AD_SELECTOR = `[${HIDDEN_AD_ATTR}]`;
+  const USER_SCRIPT_UI_SELECTOR = [
+    '.wbset-panel',
+    '.wbset-btn',
+    '.wb-user-context-menu',
+    '.wb-user-context-toast',
+    '.wb-retro-confirm-overlay',
+    '.wb-retro-notice-stack',
+  ].join(',');
   const RELATIONSHIP_PAGE_ATTR = 'data-__wb_relationship_list_page';
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
   const FLOATING_VIDEO_PLAYER_SELECTOR = [
@@ -371,7 +1089,6 @@
   const COMPACTED_VIRTUAL_WRAPPER_ATTR =
     'data-__wb_compacted_virtual_wrapper';
   const ORIGINAL_TRANSLATE_Y_ATTR = 'data-__wb_original_translate_y';
-  const ORIGINAL_TRANSLATE_X_ATTR = 'data-__wb_original_translate_x';
   const ORIGINAL_TOP_ATTR = 'data-__wb_original_top';
   const ORIGINAL_LAYOUT_MODE_ATTR = 'data-__wb_original_layout_mode';
   const ORIGINAL_TRANSFORM_STYLE_ATTR = 'data-__wb_original_transform_style';
@@ -397,13 +1114,76 @@
     '[style*="matrix("]',
     '[style*="top:"]',
   ].join(',');
-  let virtualScrollerCompactionState = new WeakMap();
-  const THROTTLE_MS = 300; // 节流（毫秒）
+  const VIRTUAL_COMPACTION_RUNTIME = (() => {
+    let wrapperStates = new WeakMap();
+    const stats = {
+      runs: 0,
+      resets: 0,
+      lastWrapperCount: 0,
+      lastHiddenSlotCount: 0,
+    };
+    return Object.freeze({
+      stateFor(wrapper) {
+        let state = wrapperStates.get(wrapper);
+        if (!state) {
+          state = { hiddenSlots: new Map() };
+          wrapperStates.set(wrapper, state);
+        }
+        return state;
+      },
+      delete(wrapper) {
+        wrapperStates.delete(wrapper);
+      },
+      reset() {
+        wrapperStates = new WeakMap();
+        stats.resets++;
+      },
+      recordRun(wrapperCount, hiddenSlotCount) {
+        stats.runs++;
+        stats.lastWrapperCount = wrapperCount;
+        stats.lastHiddenSlotCount = hiddenSlotCount;
+      },
+      getStats() {
+        return { ...stats };
+      },
+    });
+  })();
   const MAX_418 = 3; // 连续 418 次数上限
+  const MAX_FULL_SYNC_PAGES = 5000;
   const MAIN_WEIBO_HOSTS = new Set(['weibo.com', 'www.weibo.com']);
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function createSyncAbortError() {
+    try {
+      return new DOMException('新浪微博官方黑名单同步已取消', 'AbortError');
+    } catch {
+      const error = new Error('新浪微博官方黑名单同步已取消');
+      error.name = 'AbortError';
+      return error;
+    }
+  }
+
+  function throwIfSyncAborted(signal) {
+    if (signal?.aborted) throw createSyncAbortError();
+  }
+
+  function sleep(ms, signal) {
+    throwIfSyncAborted(signal);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(done, ms);
+      function done() {
+        signal?.removeEventListener('abort', abort);
+        resolve();
+      }
+      function abort() {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        reject(createSyncAbortError());
+      }
+      signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
   const canUseSettingApi = () => MAIN_WEIBO_HOSTS.has(location.hostname);
-  const SETTING_API_HOST_ERROR = '请在 weibo.com 主站页面同步黑名单';
+  const SETTING_API_HOST_ERROR =
+    '请在 weibo.com 主站页面同步新浪微博官方黑名单';
 
   // 保存原生接口。不要挂到 window，避免页面脚本绕过过滤器或读取内部状态。
   const WB_BL_NATIVE = {
@@ -418,41 +1198,86 @@
     return m ? m[1] : '';
   }
 
+  function normalizeSyncCursor(value) {
+    const cursor = String(value ?? '').trim();
+    return !cursor || cursor === '0' ? '' : cursor;
+  }
+
+  function buildFilteredUsersURL(page, cursor) {
+    const cursorQuery = cursor
+      ? `&cursor=${encodeURIComponent(String(cursor))}`
+      : '';
+    return `/ajax/setting/getFilteredUsers?page=${page}${cursorQuery}`;
+  }
+
   /**
    * 全量同步：只在用户手动触发或无缓存时使用
    */
-  async function fullSync() {
+  async function fullSync(options = {}) {
     if (!canUseSettingApi()) {
       throw new Error(SETTING_API_HOST_ERROR);
     }
+    const { signal, onProgress } = options;
     const list = [];
+    const baseExclusions = readLocalBLExclusions();
+    const exclusions = new Set(baseExclusions);
     let page = 1,
-      cursor = 0,
+      cursor = '',
       strikes = 0;
+    const seenCursors = new Set();
     while (true) {
-      let url = `/ajax/setting/getFilteredUsers?page=${page}`;
-      if (cursor) url += `&cursor=${cursor}`;
+      throwIfSyncAborted(signal);
+      if (page > MAX_FULL_SYNC_PAGES) {
+        throw new Error('新浪微博官方黑名单页数异常，完整同步已停止');
+      }
+      onProgress?.({ currentPage: page, loaded: list.length });
+      const url = buildFilteredUsersURL(page, cursor);
       const res = await WB_BL_NATIVE.fetch(url, {
         credentials: 'include',
+        signal,
       });
       if (res.status === 418) {
-        if (++strikes > MAX_418) break;
-        await sleep(3000);
+        if (++strikes > MAX_418) {
+          throw new Error('新浪微博请求过于频繁，完整同步未完成');
+        }
+        onProgress?.({
+          currentPage: page,
+          loaded: list.length,
+          waiting: true,
+        });
+        await sleep(3000, signal);
         continue;
       }
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      strikes = 0;
       const data = await res.json();
+      throwIfSyncAborted(signal);
       (data.card_group || []).forEach((item) => {
         const uid = extractUIDFromScheme(item);
-        if (uid) list.push(uid);
+        if (!uid) return;
+        exclusions.delete(uid);
+        list.push(uid);
       });
-      if (!data.next_cursor) break;
-      cursor = data.next_cursor;
+      onProgress?.({ currentPage: page, loaded: list.length });
+      const nextCursor = normalizeSyncCursor(data.next_cursor);
+      if (!nextCursor) break;
+      if (seenCursors.has(nextCursor)) {
+        throw new Error('新浪微博官方黑名单重复返回同一游标，完整同步已停止');
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
       page++;
-      await sleep(THROTTLE_MS);
+      await sleep(THROTTLE_MS, signal);
     }
+    throwIfSyncAborted(signal);
+    const finalExclusions = persistRebasedLocalBLExclusions(
+      baseExclusions,
+      exclusions
+    );
     const merged = readLocalBLCache();
-    list.forEach((uid) => merged.add(uid));
+    list.forEach((uid) => {
+      if (!finalExclusions.has(uid)) merged.add(uid);
+    });
     _GM_setValue(UID_KEY, Array.from(merged).join(','));
     return merged;
   }
@@ -465,21 +1290,46 @@
       if (options.silent) return set;
       throw new Error(SETTING_API_HOST_ERROR);
     }
+    const { signal, onProgress } = options;
+    throwIfSyncAborted(signal);
+    onProgress?.({ currentPage: 1, targetPages: 1, loaded: 0 });
     const res = await WB_BL_NATIVE.fetch(
       '/ajax/setting/getFilteredUsers?page=1',
-      { credentials: 'include' }
+      { credentials: 'include', signal }
     );
-    if (!res.ok) return set;
+    if (!res.ok) {
+      if (options.silent) return set;
+      throw new Error('HTTP ' + res.status);
+    }
     const data = await res.json();
+    throwIfSyncAborted(signal);
+    const workingSet = new Set(set);
+    const baseExclusions = readLocalBLExclusions();
+    const exclusions = new Set(baseExclusions);
+    const respectExclusions = options.silent === true;
+    let exclusionsChanged = false;
     let added = 0;
     (data.card_group || []).forEach((item) => {
       const uid = extractUIDFromScheme(item);
-      if (uid && !set.has(uid)) {
-        set.add(uid);
+      if (!uid || (respectExclusions && exclusions.has(uid))) return;
+      if (!respectExclusions && exclusions.delete(uid)) {
+        exclusionsChanged = true;
+      }
+      if (!workingSet.has(uid)) {
+        workingSet.add(uid);
         added++;
       }
     });
-    const { merged, changed } = mergeWithLocalBLCache(set);
+    onProgress?.({
+      currentPage: 1,
+      targetPages: 1,
+      loaded: (data.card_group || []).length,
+    });
+    throwIfSyncAborted(signal);
+    if (exclusionsChanged) {
+      persistRebasedLocalBLExclusions(baseExclusions, exclusions);
+    }
+    const { merged, changed } = mergeWithLocalBLCache(workingSet);
     replaceSetContents(set, merged);
     if (added || changed) _GM_setValue(UID_KEY, Array.from(set).join(','));
     return set;
@@ -491,40 +1341,78 @@
    * @param {Number}pages  要同步的页数
    * @returns {Number} 新增 UID 数
    */
-  async function syncPages(set, pages = 5) {
+  async function syncPages(set, pages = 5, options = {}) {
     if (!canUseSettingApi()) {
       throw new Error(SETTING_API_HOST_ERROR);
     }
+    const { signal, onProgress } = options;
     let page = 1,
-      cursor = 0,
+      cursor = '',
       strikes = 0,
       added = 0;
+    const workingSet = new Set(set);
+    const baseExclusions = readLocalBLExclusions();
+    const exclusions = new Set(baseExclusions);
+    let exclusionsChanged = false;
+    const seenCursors = new Set();
     while (page <= pages) {
-      let url = `/ajax/setting/getFilteredUsers?page=${page}`;
-      if (cursor) url += `&cursor=${cursor}`;
+      throwIfSyncAborted(signal);
+      onProgress?.({
+        currentPage: page,
+        targetPages: pages,
+        loaded: workingSet.size - set.size,
+      });
+      const url = buildFilteredUsersURL(page, cursor);
       const res = await WB_BL_NATIVE.fetch(url, {
         credentials: 'include',
+        signal,
       });
       if (res.status === 418) {
-        if (++strikes > MAX_418) break;
-        await sleep(3000);
+        if (++strikes > MAX_418) {
+          throw new Error('新浪微博请求过于频繁，分页同步未完成');
+        }
+        onProgress?.({
+          currentPage: page,
+          targetPages: pages,
+          loaded: workingSet.size - set.size,
+          waiting: true,
+        });
+        await sleep(3000, signal);
         continue;
       }
-      if (!res.ok) break;
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      strikes = 0;
       const data = await res.json();
+      throwIfSyncAborted(signal);
       (data.card_group || []).forEach((item) => {
         const uid = extractUIDFromScheme(item);
-        if (uid && !set.has(uid)) {
-          set.add(uid);
+        if (!uid) return;
+        if (exclusions.delete(uid)) exclusionsChanged = true;
+        if (!workingSet.has(uid)) {
+          workingSet.add(uid);
           added++;
         }
       });
-      if (!data.next_cursor) break;
-      cursor = data.next_cursor;
+      onProgress?.({
+        currentPage: page,
+        targetPages: pages,
+        loaded: added,
+      });
+      const nextCursor = normalizeSyncCursor(data.next_cursor);
+      if (!nextCursor) break;
+      if (seenCursors.has(nextCursor)) {
+        throw new Error('新浪微博官方黑名单重复返回同一游标，分页同步已停止');
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
       page++;
-      await sleep(THROTTLE_MS);
+      await sleep(THROTTLE_MS, signal);
     }
-    const { merged, changed } = mergeWithLocalBLCache(set);
+    throwIfSyncAborted(signal);
+    if (exclusionsChanged) {
+      persistRebasedLocalBLExclusions(baseExclusions, exclusions);
+    }
+    const { merged, changed } = mergeWithLocalBLCache(workingSet);
     replaceSetContents(set, merged);
     if (added || changed) _GM_setValue(UID_KEY, Array.from(set).join(','));
     return added;
@@ -534,12 +1422,48 @@
 
   function readLocalBLCache() {
     const cache = _GM_getValue(UID_KEY, '');
+    const exclusions = readLocalBLExclusions();
+    return new Set(
+      String(cache || '')
+        .split(',')
+        .map((uid) => uid.trim())
+        .filter((uid) => /^\d{5,}$/.test(uid) && !exclusions.has(uid))
+    );
+  }
+
+  function readLocalBLExclusions() {
+    const cache = _GM_getValue(UID_EXCLUSION_KEY, '');
     return new Set(
       String(cache || '')
         .split(',')
         .map((uid) => uid.trim())
         .filter((uid) => /^\d{5,}$/.test(uid))
     );
+  }
+
+  function persistLocalBLExclusions(exclusions) {
+    _GM_setValue(UID_EXCLUSION_KEY, Array.from(exclusions).join(','));
+  }
+
+  function setsHaveSameValues(left, right) {
+    return left.size === right.size && [...left].every((item) => right.has(item));
+  }
+
+  function persistRebasedLocalBLExclusions(base, working) {
+    const latest = readLocalBLExclusions();
+    const rebased = new Set(working);
+
+    latest.forEach((uid) => {
+      if (!base.has(uid)) rebased.add(uid);
+    });
+    base.forEach((uid) => {
+      if (!latest.has(uid)) rebased.delete(uid);
+    });
+
+    if (!setsHaveSameValues(latest, rebased)) {
+      persistLocalBLExclusions(rebased);
+    }
+    return rebased;
   }
 
   function replaceSetContents(target, source) {
@@ -551,7 +1475,10 @@
   function mergeWithLocalBLCache(set) {
     const merged = readLocalBLCache();
     const before = merged.size;
-    set.forEach((uid) => merged.add(uid));
+    const exclusions = readLocalBLExclusions();
+    set.forEach((uid) => {
+      if (!exclusions.has(uid)) merged.add(uid);
+    });
     return {
       merged,
       changed: merged.size !== before,
@@ -560,7 +1487,6 @@
 
   function restoreBlockedContentHideState(root = document) {
     if (!root || !root.querySelectorAll) return;
-    virtualScrollerCompactionState = new WeakMap();
     clearVirtualCompactionState(root);
     const nodes = [];
     if (root instanceof Element && root.matches(BLOCKED_CONTENT_HIDE_SELECTOR)) {
@@ -600,52 +1526,212 @@
     return BL.size;
   }
 
-  // 将同步能力暴露给设置面板，但不暴露完整 UID 集合。
+  function handleRemoteBLStorageChange(_name, _oldValue, _newValue, remote) {
+    if (!remote) return;
+    WB_INTERNAL.dom.schedule(
+      'blacklist-storage-refresh',
+      () => reloadLocalBLFromStorage({ restoreHidden: true }),
+      50
+    );
+  }
+
+  if (_GM_addValueChangeListener) {
+    [UID_KEY, UID_EXCLUSION_KEY].forEach((key) => {
+      _GM_addValueChangeListener(key, handleRemoteBLStorageChange);
+    });
+    _GM_addValueChangeListener(
+      WB_INTERNAL.config.key,
+      (_name, _oldValue, _newValue, remote) => {
+        if (!remote) return;
+        applyRuntimeConfig(WB_INTERNAL.config.read());
+      }
+    );
+  }
+
+  const SYNC_LABELS = Object.freeze({
+    startup: '新浪微博官方黑名单启动同步',
+    delta: '新浪微博官方黑名单增量同步',
+    pages: '新浪微博官方黑名单分页同步',
+    full: '新浪微博官方黑名单完整同步',
+  });
+  const syncStateListeners = new Set();
+  let activeSyncTask = null;
+
+  function getPublicSyncState() {
+    if (!activeSyncTask) return { active: false };
+    const {
+      kind,
+      label,
+      startedAt,
+      currentPage,
+      targetPages,
+      loaded,
+      waiting,
+    } = activeSyncTask;
+    return {
+      active: true,
+      kind,
+      label,
+      startedAt,
+      currentPage,
+      targetPages,
+      loaded,
+      waiting,
+    };
+  }
+
+  function emitSyncState() {
+    const state = getPublicSyncState();
+    syncStateListeners.forEach((listener) => {
+      try {
+        listener(state);
+      } catch (error) {
+        console.warn('[WB-BL] 同步状态监听器执行失败', error);
+      }
+    });
+  }
+
+  function updateSyncProgress(progress = {}) {
+    if (!activeSyncTask) return;
+    Object.assign(activeSyncTask, progress, { waiting: progress.waiting === true });
+    emitSyncState();
+  }
+
+  async function runControlledSync(kind, task) {
+    if (activeSyncTask) {
+      throw new Error(`已有${activeSyncTask.label}正在运行，请先等待或取消`);
+    }
+    const controller = new AbortController();
+    activeSyncTask = {
+      kind,
+      label: SYNC_LABELS[kind] || '新浪微博官方黑名单同步',
+      controller,
+      startedAt: Date.now(),
+      currentPage: 0,
+      targetPages: null,
+      loaded: 0,
+      waiting: false,
+    };
+    emitSyncState();
+    try {
+      return await task({
+        signal: controller.signal,
+        onProgress: updateSyncProgress,
+      });
+    } finally {
+      activeSyncTask = null;
+      emitSyncState();
+    }
+  }
+
+  function cancelActiveSync() {
+    if (!activeSyncTask) return false;
+    activeSyncTask.controller.abort();
+    return true;
+  }
+
+  // 仅通过用户脚本闭包与设置面板共享同步能力，不向页面 window 暴露接口。
   const WB_BL_SYNC_BRIDGE = Object.freeze({
     getCount: () => BL.size,
+    getState: getPublicSyncState,
+    subscribe: (listener) => {
+      if (typeof listener !== 'function') return () => {};
+      syncStateListeners.add(listener);
+      listener(getPublicSyncState());
+      return () => syncStateListeners.delete(listener);
+    },
+    cancel: cancelActiveSync,
     reloadFromStorage: (options = {}) => reloadLocalBLFromStorage(options),
-    fullSync: async () => {
-      BL = await fullSync();
-      refreshBlockedDOMAfterBLChange({ restoreHidden: true });
-      return BL.size;
-    },
-    deltaSync: async () => {
-      const before = BL.size;
-      BL = await deltaSync(BL);
-      refreshBlockedDOMAfterBLChange({ restoreHidden: false });
-      return {
-        added: BL.size - before,
-        total: BL.size,
-      };
-    },
-    syncPages: async (pages) => {
+    fullSync: () =>
+      runControlledSync('full', async (controls) => {
+        BL = await fullSync(controls);
+        refreshBlockedDOMAfterBLChange({ restoreHidden: true });
+        return BL.size;
+      }),
+    deltaSync: () =>
+      runControlledSync('delta', async (controls) => {
+        const before = BL.size;
+        BL = await deltaSync(BL, controls);
+        refreshBlockedDOMAfterBLChange({ restoreHidden: false });
+        return {
+          added: BL.size - before,
+          total: BL.size,
+        };
+      }),
+    syncPages: (pages) => {
       const count = Math.max(1, Math.min(Number(pages) || 5, 20));
-      const added = await syncPages(BL, count);
-      refreshBlockedDOMAfterBLChange({ restoreHidden: false });
-      return {
-        added,
-        total: BL.size,
-      };
+      return runControlledSync('pages', async (controls) => {
+        const added = await syncPages(BL, count, controls);
+        refreshBlockedDOMAfterBLChange({ restoreHidden: false });
+        return {
+          added,
+          total: BL.size,
+        };
+      });
     },
   });
-  try {
-    Object.defineProperty(window, 'WB_BL_SYNC', {
-      value: WB_BL_SYNC_BRIDGE,
-      configurable: false,
-      writable: false,
-    });
-  } catch {}
+  WB_INTERNAL.blSync = WB_BL_SYNC_BRIDGE;
+
+  function getDiagnosticPageType() {
+    const path = location.pathname || '/';
+    if (location.hostname === 's.weibo.com') {
+      return /^\/weibo(?:\/|$)/.test(path) ? 'search-results' : 'search-home';
+    }
+    if (path === '/') return 'home';
+    if (/^\/mygroups(?:\/|$)/.test(path)) return 'latest-timeline';
+    if (/^\/set(?:\/|$)/.test(path)) return 'weibo-settings';
+    if (/^\/(?:u\/)?\d{5,}(?:\/|$)/.test(path)) return 'user-profile';
+    return 'other';
+  }
+
+  WB_INTERNAL.getDiagnostics = () => {
+    const config = WB_INTERNAL.config.read();
+    return {
+      script: {
+        version: SCRIPT_VERSION,
+        generatedAt: new Date().toISOString(),
+        host: location.hostname,
+        pageType: getDiagnosticPageType(),
+      },
+      config: {
+        schemaVersion: Number(config.schemaVersion) || 0,
+        expectedSchemaVersion: WB_INTERNAL.config.schemaVersion,
+        migrations: WB_RUNTIME_METRICS.config.migrations,
+        recoveries: WB_RUNTIME_METRICS.config.recoveries,
+        futureSchema: WB_RUNTIME_METRICS.config.futureSchema,
+      },
+      localBlockList: {
+        cachedUIDs: BL.size,
+        localExclusions: readLocalBLExclusions().size,
+        sync: getPublicSyncState(),
+      },
+      relay: { ...WB_RUNTIME_METRICS.relay },
+      dom: WB_INTERNAL.dom.getStats(),
+      virtualScroller: VIRTUAL_COMPACTION_RUNTIME.getStats(),
+      capabilities: {
+        valueChangeListener: !!(
+          _GM_addValueChangeListener && _GM_removeValueChangeListener
+        ),
+        openInTab: !!_GM_openInTab,
+        fetch: typeof window.fetch === 'function',
+        xhr: typeof XMLHttpRequest === 'function',
+        webSocket: typeof WebSocket === 'function',
+      },
+    };
+  };
 
   (async () => {
     syncRelationshipPageMode();
     BL = readLocalBLCache();
-    // 启动时静默合并官方黑名单第一页，修复官方已拉黑但本地未屏蔽的近期用户。
+    // 启动时静默合并新浪微博官方黑名单第一页。
     try {
-      BL = await deltaSync(BL, { silent: true });
+      await runControlledSync('startup', async (controls) => {
+        BL = await deltaSync(BL, { ...controls, silent: true });
+      });
     } catch (e) {
-      console.warn('[WB-BL] 黑名单增量同步失败，继续使用本地缓存', e);
+      console.warn('[WB-BL] 新浪微博官方黑名单增量同步失败，继续使用本地屏蔽列表', e);
     }
-    injectCSSWhenReady(generateCSSRules());
+    updateRuntimeStyles();
     clearVirtualCompactionState(document);
     refreshBlockedDOMAfterBLChange({
       restoreHidden: false,
@@ -653,22 +1739,19 @@
     });
     scheduleBlockedDOMRefreshWhenPageReady();
 
-    // 检查首次运行和Star提醒
-    checkFirstRun();
-    checkStarReminder();
+    // 首次运行先完成同步提示，避免与 Star 提醒连续弹出。
+    const firstRunPromptScheduled = checkFirstRun();
+    if (!firstRunPromptScheduled) checkStarReminder();
   })();
 
   function generateCSSRules() {
-    // 从设置中读取是否隐藏导航栏入口。兼容旧版 hideNavVideoRecommend。
-    let cfg = {};
-    try {
-      cfg = JSON.parse(_GM_getValue('cfg', '{}') || '{}');
-    } catch (e) {}
+    // 从统一配置中读取页面样式开关。
+    const cfg = WB_INTERNAL.config.read();
 
-    const legacyHideNav = cfg.hideNavVideoRecommend === true;
     const hideHotSearch = cfg.hideHotSearch !== false;
-    const hideNavVideo = cfg.hideNavVideo === true || legacyHideNav;
-    const hideNavRecommend = cfg.hideNavRecommend === true || legacyHideNav;
+    const defaultLatestTimeline = cfg.defaultLatestTimeline !== false;
+    const hideNavVideo = cfg.hideNavVideo === true;
+    const hideNavRecommend = cfg.hideNavRecommend === true;
     const hideNavGame = cfg.hideNavGame !== false;
     const hideNavSelectors = [];
 
@@ -676,9 +1759,11 @@
       hideNavSelectors.push(
         'nav a[title="视频"]',
         'nav [title="视频"]',
-        '[class*="_item_"][title="视频"]',
-        'a[href*="/tv"]',
+        '[role="navigation"] a[title="视频"]',
+        '[role="navigation"] [class*="_item_"][title="视频"]',
+        '[role="navigation"] a[href*="/tv"]',
         'nav svg[title="视频"]',
+        '[class*="Nav_"] [class*="_item_"][title="视频"]',
         '[class*="Nav_"] a[href*="/tv"]'
       );
     }
@@ -687,15 +1772,24 @@
       hideNavSelectors.push(
         'nav a[title="推荐"]',
         'nav [title="推荐"]',
-        '[class*="_item_"][title="推荐"]',
-        'a[href*="/hot"]',
+        '[role="navigation"] a[title="推荐"]',
+        '[role="navigation"] [class*="_item_"][title="推荐"]',
+        '[role="navigation"] a[href*="/hot"]',
         'nav svg[title="画板"]',
+        '[class*="Nav_"] [class*="_item_"][title="推荐"]',
         '[class*="Nav_"] a[href*="/hot"]'
       );
     }
 
     if (hideNavGame) {
-      hideNavSelectors.push('a[title="游戏"]', 'a[href*="game.weibo.com"]');
+      hideNavSelectors.push(
+        'nav a[title="游戏"]',
+        'nav a[href*="game.weibo.com"]',
+        '[role="navigation"] a[title="游戏"]',
+        '[role="navigation"] a[href*="game.weibo.com"]',
+        '[class*="Nav_"] a[title="游戏"]',
+        '[class*="Nav_"] a[href*="game.weibo.com"]'
+      );
     }
 
     const hideNavIconsCSS = hideNavSelectors.length
@@ -720,6 +1814,14 @@
           [class*="card"]:has(> .hot-band-tabs),
           [class*="card"]:has(> .hot-band-container),
           [class*="Card"]:has(> .hot-band-tabs) {
+            display: none !important;
+          }
+        `
+      : '';
+    const hideAllFollowingCSS = defaultLatestTimeline
+      ? `
+          div[role="link"][title="全部关注"],
+          .Links_box_17T3k {
             display: none !important;
           }
         `
@@ -781,35 +1883,41 @@
         visibility: hidden !important;
         pointer-events: none !important;
       }
-      /* 首页有新微博时，将红色 NEW 胶囊替换为圆点 */
-      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) {
+      /* 首页有新微博时，将主站和搜索站的红色 NEW 胶囊替换为圆点 */
+      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new),
+      a[href="/"]:has(.woo-tab-item-main[aria-label="首页"]) .woo-badge-main:has(.woo-badge-new) {
         min-width: var(--w-badge-dot, .625rem) !important;
         width: var(--w-badge-dot, .625rem) !important;
         height: var(--w-badge-dot, .625rem) !important;
         padding: 0 !important;
         border-radius: 50% !important;
         line-height: 0 !important;
+      }
+      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) {
         top: 0 !important;
         right: 0 !important;
         transform: translate(50%, -50%) !important;
       }
-      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) .woo-badge-new {
+      [role="navigation"] a[title="首页"][href="/"] .woo-badge-main:has(.woo-badge-new) .woo-badge-new,
+      a[href="/"]:has(.woo-tab-item-main[aria-label="首页"]) .woo-badge-main:has(.woo-badge-new) .woo-badge-new {
         display: none !important;
       }
-      div[role="link"][title="全部关注"] { display: none !important; }
-      .Links_box_17T3k { display: none !important; }
+      ${hideAllFollowingCSS}
       ${hideSearchHotBandCSS}
       ${hideNavIconsCSS}
     `;
   }
 
-  function injectCSSWhenReady(cssText) {
+  function injectCSSWhenReady(cssText, styleId = '') {
     const tryInject = () => {
       const head = document.head || document.getElementsByTagName('head')[0];
       if (head) {
-        const style = document.createElement('style');
+        const style = styleId
+          ? document.getElementById(styleId) || document.createElement('style')
+          : document.createElement('style');
+        if (styleId) style.id = styleId;
         style.textContent = cssText;
-        head.appendChild(style);
+        if (!style.isConnected) head.appendChild(style);
       } else {
         setTimeout(tryInject, 50);
       }
@@ -817,7 +1925,27 @@
     tryInject();
   }
 
-  const MAX_UID_EXTRACTION_NODES = 5000;
+  function updateRuntimeStyles() {
+    injectCSSWhenReady(generateCSSRules(), 'wb-retro-runtime-style');
+  }
+
+  function applyRuntimeConfig(nextCfg = {}) {
+    Object.assign(
+      CONTENT_FILTER_CFG,
+      CONTENT_FILTER_DEFAULTS,
+      nextCfg && typeof nextCfg === 'object' ? nextCfg : {}
+    );
+    updateRuntimeStyles();
+    restoreBlockedContentHideState(document);
+    restoreRecognizedAds(document);
+    hideBlockedDOMPosts(document);
+    compactVirtualScrollerGaps(document);
+    scheduleBlockedDOMRefresh();
+    nudgeTimelineLayout();
+  }
+
+  WB_INTERNAL.applyConfig = applyRuntimeConfig;
+
   const MAX_FILTER_DEPTH = 80;
 
   function isLikelyUserPayload(obj) {
@@ -840,77 +1968,71 @@
     if (/^\d{5,}$/.test(uid)) targetSet.add(uid);
   }
 
-  function extractUIDs(data) {
-    const uids = new Set();
-    const seen = new WeakSet();
-    const stack = [data];
-    let visited = 0;
+  function addDirectOwnerUIDs(targetSet, obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    addUIDIfValid(targetSet, obj.uid);
+    addUIDIfValid(targetSet, obj.user_id);
+    addUIDIfValid(targetSet, obj.userId);
 
-    while (stack.length && visited < MAX_UID_EXTRACTION_NODES) {
-      const o = stack.pop();
-      if (!o || typeof o !== 'object') continue;
-      if (seen.has(o)) continue;
-      seen.add(o);
-      visited++;
-
-      const likelyUser = isLikelyUserPayload(o);
-      Object.entries(o).forEach(([k, v]) => {
-        const scalar = typeof v === 'number' ? String(v) : v;
-        if (
-          /^(?:uid|user_id|userId)$/i.test(k) &&
-          typeof scalar === 'string' &&
-          /^\d{5,}$/.test(scalar)
-        ) {
-          uids.add(scalar);
-        }
-        if (
-          likelyUser &&
-          /^(?:id|idstr)$/i.test(k) &&
-          typeof scalar === 'string'
-        ) {
-          addUIDIfValid(uids, scalar);
-        }
-        if (k === 'user' && v && typeof v === 'object') {
-          addUIDIfValid(uids, v.id);
-          addUIDIfValid(uids, v.idstr);
-        }
-        if (Array.isArray(v)) {
-          v.forEach((item) => {
-            if (item && typeof item === 'object') stack.push(item);
-          });
-        } else if (v && typeof v === 'object') {
-          stack.push(v);
-        }
-      });
+    if (isLikelyUserPayload(obj)) {
+      addUIDIfValid(targetSet, obj.id);
+      addUIDIfValid(targetSet, obj.idstr);
     }
+
+    const user = obj.user;
+    if (user && typeof user === 'object' && !Array.isArray(user)) {
+      addUIDIfValid(targetSet, user.uid);
+      addUIDIfValid(targetSet, user.user_id);
+      addUIDIfValid(targetSet, user.userId);
+      addUIDIfValid(targetSet, user.id);
+      addUIDIfValid(targetSet, user.idstr);
+    }
+  }
+
+  function extractDirectContentUIDs(item) {
+    const uids = new Set();
+    addDirectOwnerUIDs(uids, item);
+    ['mblog', 'status', 'retweeted_status'].forEach((key) => {
+      addDirectOwnerUIDs(uids, item?.[key]);
+    });
     return uids;
   }
 
-  function filterData(obj, seen = new WeakMap(), depth = 0) {
-    if (isRelationshipListPage()) return obj;
-    if (!obj || typeof obj !== 'object') return obj;
-    if (depth > MAX_FILTER_DEPTH) return obj;
-    if (seen.has(obj)) return seen.get(obj);
+  function isBlacklistCategoryEnabled(category) {
+    const settingByCategory = {
+      posts: 'hideBlacklistPosts',
+      comments: 'hideBlacklistComments',
+      searchResults: 'hideBlacklistSearchResults',
+      userCards: 'hideBlacklistUserCards',
+      interactions: 'hideBlacklistInteractions',
+    };
+    const setting = settingByCategory[category] || settingByCategory.posts;
+    return CONTENT_FILTER_CFG[setting] !== false;
+  }
 
-    if (Array.isArray(obj)) {
-      const out = [];
-      seen.set(obj, out);
-      obj.forEach((item) => {
-        if ([...extractUIDs(item)].some((uid) => BL.has(uid))) return;
-        out.push(filterData(item, seen, depth + 1));
-      });
-      return out;
+  function isStandaloneUserCardPayload(item) {
+    return isLikelyUserPayload(item);
+  }
+
+  function getNestedBlacklistCategory(key, fallbackCategory) {
+    if (/^(?:comments?|replies|replys|comment_list)$/i.test(key)) {
+      return 'comments';
     }
-    const out = {};
-    seen.set(obj, out);
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = Array.isArray(v)
-        ? filterData(v, seen, depth + 1)
-        : v && typeof v === 'object'
-          ? filterData(v, seen, depth + 1)
-          : v;
+    if (
+      /^(?:reposts?|likes?|attitudes?|interactions?|repost_list|like_list)$/i.test(
+        key
+      )
+    ) {
+      return 'interactions';
     }
-    return out;
+    if (
+      /^(?:users?|user_list|recommend_users|recommended_users|suggestions)$/i.test(
+        key
+      )
+    ) {
+      return 'userCards';
+    }
+    return fallbackCategory;
   }
 
   function hasExplicitAdMarker(obj) {
@@ -956,76 +2078,166 @@
     });
   }
 
-  function filterAdsFromData(obj, seen = new WeakMap(), depth = 0) {
-    if (!CONTENT_FILTER_CFG.hideAds) return obj;
+  function filterContentTree(
+    obj,
+    responseCategory,
+    options = {},
+    context = {
+      seen: new WeakMap(),
+      changed: false,
+    },
+    depth = 0
+  ) {
     if (!obj || typeof obj !== 'object') return obj;
     if (depth > MAX_FILTER_DEPTH) return obj;
-    if (seen.has(obj)) return seen.get(obj);
+    if (context.seen.has(obj)) return context.seen.get(obj);
 
     if (Array.isArray(obj)) {
       const out = [];
-      seen.set(obj, out);
+      context.seen.set(obj, out);
       obj.forEach((item) => {
-        if (hasExplicitAdMarker(item)) return;
-        out.push(filterAdsFromData(item, seen, depth + 1));
+        if (options.filterAds && hasExplicitAdMarker(item)) {
+          context.changed = true;
+          return;
+        }
+        const itemCategory = isStandaloneUserCardPayload(item)
+          ? 'userCards'
+          : responseCategory;
+        if (
+          options.filterBlacklist &&
+          isBlacklistCategoryEnabled(itemCategory) &&
+          [...extractDirectContentUIDs(item)].some((uid) => BL.has(uid))
+        ) {
+          context.changed = true;
+          return;
+        }
+        out.push(
+          filterContentTree(
+            item,
+            responseCategory,
+            options,
+            context,
+            depth + 1
+          )
+        );
       });
       return out;
     }
 
     const out = {};
-    seen.set(obj, out);
+    context.seen.set(obj, out);
     for (const [key, value] of Object.entries(obj)) {
+      const nestedCategory = getNestedBlacklistCategory(key, responseCategory);
       out[key] =
         value && typeof value === 'object'
-          ? filterAdsFromData(value, seen, depth + 1)
+          ? filterContentTree(
+              value,
+              nestedCategory,
+              options,
+              context,
+              depth + 1
+            )
           : value;
     }
     return out;
   }
 
+  const FILTERABLE_WEIBO_HOSTS = new Set([
+    'weibo.com',
+    'www.weibo.com',
+    's.weibo.com',
+  ]);
+
+  function parseFirstPartyWeiboURL(url) {
+    if (typeof url !== 'string' || !url) return null;
+    try {
+      const parsed = new URL(url, location.origin);
+      return FILTERABLE_WEIBO_HOSTS.has(parsed.hostname.toLowerCase())
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   function isFilterableContentURL(url) {
+    const parsed = parseFirstPartyWeiboURL(url);
+    if (!parsed) return false;
+    const path = parsed.pathname;
     return (
-      typeof url === 'string' &&
-      /\/(?:ajax\/(?:feed|statuses|comment|getCommentList|repost|like)|graphql\/|(?:mymblog|timeline|index))/.test(
-        url
-      )
+      /^\/ajax\/(?:feed|statuses|comment|getCommentList|repost|like|recommend|suggest|users?|usercard|profile|friendships)(?:\/|$)/i.test(
+        path
+      ) ||
+      /^\/graphql\//i.test(path) ||
+      /^\/(?:mymblog|timeline|index)(?:\/|$)/i.test(path)
     );
   }
 
-  function shouldFilterBlacklistResponse(url) {
-    if (isRelationshipListPage()) return false;
-    if (isWeiboSearchResultPage()) {
-      return CONTENT_FILTER_CFG.hideBlacklistSearchResults;
-    }
+  function getBlacklistResponseCategory(url) {
     if (
       /\/ajax\/(?:comment|getCommentList)|\/ajax\/statuses\/(?:buildComments|comment|reply)/i.test(
         url
       )
     ) {
-      return CONTENT_FILTER_CFG.hideBlacklistComments;
+      return 'comments';
     }
     if (
       /\/ajax\/(?:repost|like)|\/ajax\/statuses\/(?:repost|like)/i.test(url)
     ) {
-      return CONTENT_FILTER_CFG.hideBlacklistInteractions;
+      return 'interactions';
     }
-    return CONTENT_FILTER_CFG.hideBlacklistPosts;
+    if (
+      /\/(?:ajax\/)?(?:recommend|suggest|user(?:s|card)?|profile|friendships)(?:\/|[?#]|$)/i.test(
+        url
+      )
+    ) {
+      return 'userCards';
+    }
+    if (isWeiboSearchResultPage()) {
+      return 'searchResults';
+    }
+    return 'posts';
   }
 
-  function filterContentResponseData(data, url = '') {
-    let result = data;
-    if (CONTENT_FILTER_CFG.hideAds) result = filterAdsFromData(result);
-    if (shouldFilterBlacklistResponse(String(url || ''))) {
-      result = filterData(result);
+  function shouldFilterBlacklistResponse() {
+    if (isRelationshipListPage()) return false;
+    return [
+      'posts',
+      'comments',
+      'searchResults',
+      'userCards',
+      'interactions',
+    ].some(isBlacklistCategoryEnabled);
+  }
+
+  function transformContentResponseData(data, url = '') {
+    const responseURL = String(url || '');
+    const options = {
+      filterAds: CONTENT_FILTER_CFG.hideAds === true,
+      filterBlacklist: shouldFilterBlacklistResponse(),
+    };
+    if (!options.filterAds && !options.filterBlacklist) {
+      return { data, changed: false };
     }
-    return result;
+    const context = {
+      seen: new WeakMap(),
+      changed: false,
+    };
+    const filtered = filterContentTree(
+      data,
+      getBlacklistResponseCategory(responseURL),
+      options,
+      context
+    );
+    return {
+      data: context.changed ? filtered : data,
+      changed: context.changed,
+    };
   }
 
   function isRelationshipFriendsURL(url) {
-    return (
-      typeof url === 'string' &&
-      /\/ajax\/friendships\/friends(?:[?#]|$)/.test(url)
-    );
+    const parsed = parseFirstPartyWeiboURL(url);
+    return !!parsed && /^\/ajax\/friendships\/friends\/?$/i.test(parsed.pathname);
   }
 
   function normalizeRelationshipFriendsData(data) {
@@ -1106,7 +2318,9 @@
   function addUIDToLocalBL(uid) {
     const id = String(uid || '').trim();
     if (!/^\d{5,}$/.test(id)) return false;
-    readLocalBLCache().forEach((item) => BL.add(item));
+    const exclusions = readLocalBLExclusions();
+    if (exclusions.delete(id)) persistLocalBLExclusions(exclusions);
+    replaceSetContents(BL, readLocalBLCache());
     const existed = BL.has(id);
     BL.add(id);
     if (!existed) persistBL();
@@ -1116,8 +2330,13 @@
   function removeUIDFromLocalBL(uid) {
     const id = String(uid || '').trim();
     if (!/^\d{5,}$/.test(id)) return false;
-    readLocalBLCache().forEach((item) => BL.add(item));
+    replaceSetContents(BL, readLocalBLCache());
     const existed = BL.delete(id);
+    const exclusions = readLocalBLExclusions();
+    if (!exclusions.has(id)) {
+      exclusions.add(id);
+      persistLocalBLExclusions(exclusions);
+    }
     if (existed) persistBL();
     return existed;
   }
@@ -1325,7 +2544,6 @@
   function restoreHiddenRelationshipItems(root = document, options = {}) {
     syncRelationshipPageMode();
     if (!isRelationshipListPage() || !document.querySelectorAll) return;
-    virtualScrollerCompactionState = new WeakMap();
     clearVirtualCompactionState(document);
     const nodes = new Set();
     const collect = (scope) => {
@@ -1352,11 +2570,8 @@
     if (options.reschedule === false) return;
     const rerun = () =>
       restoreHiddenRelationshipItems(document, { reschedule: false });
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(rerun);
-    }
-    setTimeout(rerun, 80);
-    setTimeout(rerun, 300);
+    WB_INTERNAL.dom.schedule('relationship-restore-primary', rerun, 16);
+    WB_INTERNAL.dom.schedule('relationship-restore-followup', rerun, 240);
   }
 
   function clearOwnBlockedContentHideState(el) {
@@ -1570,18 +2785,6 @@
 
   function elementHasUID(el, uid) {
     return getElementsForUID(el, String(uid || '').trim()).length > 0;
-  }
-
-  function firstBlockedDOMUIDIn(root) {
-    if (!(root instanceof Element) || !BL.size) return '';
-    const nodes = [];
-    if (root.matches(DOM_UID_SELECTOR)) nodes.push(root);
-    root.querySelectorAll(DOM_UID_SELECTOR).forEach((el) => nodes.push(el));
-    for (const node of nodes) {
-      const uid = [...extractDOMUIDs(node)].find((item) => BL.has(item));
-      if (uid) return uid;
-    }
-    return '';
   }
 
   function getPrimaryContentRoots(el) {
@@ -1945,9 +3148,18 @@
       restoreHiddenRelationshipItems(document);
       return false;
     }
+    if (
+      root instanceof Element &&
+      (root.matches(USER_SCRIPT_UI_SELECTOR) ||
+        root.closest(USER_SCRIPT_UI_SELECTOR))
+    ) {
+      return false;
+    }
     const target = findHideShell(root);
     if (
       !(target instanceof Element) ||
+      target.matches(USER_SCRIPT_UI_SELECTOR) ||
+      target.closest(USER_SCRIPT_UI_SELECTOR) ||
       target.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)
     ) {
       return false;
@@ -2349,10 +3561,6 @@
     return '';
   }
 
-  function isBlockedVirtualItem(item) {
-    return !!getHiddenVirtualItemUID(item);
-  }
-
   function readStoredNumber(el, attr) {
     const value = Number(el.getAttribute(attr));
     return Number.isFinite(value) ? value : null;
@@ -2391,23 +3599,6 @@
       item.setAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR, source);
     }
     return y;
-  }
-
-  function getVirtualBaseX(item) {
-    if (!(item instanceof Element)) return 0;
-    const source = getTransformSource(item);
-    const stored = readStoredNumber(item, ORIGINAL_TRANSLATE_X_ATTR);
-    if (
-      stored !== null &&
-      item.getAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR) === source
-    ) {
-      return stored;
-    }
-
-    const x = parseTranslateXFromTransform(source);
-    item.setAttribute(ORIGINAL_TRANSLATE_X_ATTR, String(x));
-    item.setAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR, source);
-    return x;
   }
 
   function clearVirtualItemCompaction(item) {
@@ -2490,12 +3681,7 @@
   }
 
   function getVirtualWrapperCompactionState(wrapper) {
-    let state = virtualScrollerCompactionState.get(wrapper);
-    if (!state) {
-      state = { hiddenSlots: new Map() };
-      virtualScrollerCompactionState.set(wrapper, state);
-    }
-    return state;
+    return VIRTUAL_COMPACTION_RUNTIME.stateFor(wrapper);
   }
 
   function sumHiddenSlotHeights(state, beforeIndex = Infinity) {
@@ -2508,6 +3694,7 @@
 
   function clearVirtualCompactionState(root = document) {
     if (!root || !root.querySelectorAll) return;
+    VIRTUAL_COMPACTION_RUNTIME.reset();
     const selector = [
       `[${COMPACTED_VIRTUAL_ITEM_ATTR}]`,
       `[${COMPACTED_TOP_ITEM_ATTR}]`,
@@ -2515,7 +3702,6 @@
       `[${COMPACTED_VIRTUAL_WRAPPER_ATTR}]`,
       `[${ORIGINAL_LAYOUT_MODE_ATTR}]`,
       `[${ORIGINAL_TRANSLATE_Y_ATTR}]`,
-      `[${ORIGINAL_TRANSLATE_X_ATTR}]`,
       `[${ORIGINAL_TOP_ATTR}]`,
       `[${ORIGINAL_TRANSFORM_STYLE_ATTR}]`,
       `[${ORIGINAL_TOP_STYLE_ATTR}]`,
@@ -2532,7 +3718,6 @@
       node.removeAttribute(COMPACTED_VIRTUAL_WRAPPER_ATTR);
       node.removeAttribute(ORIGINAL_LAYOUT_MODE_ATTR);
       node.removeAttribute(ORIGINAL_TRANSLATE_Y_ATTR);
-      node.removeAttribute(ORIGINAL_TRANSLATE_X_ATTR);
       node.removeAttribute(ORIGINAL_TOP_ATTR);
       node.removeAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR);
       node.removeAttribute(ORIGINAL_TOP_STYLE_ATTR);
@@ -2589,6 +3774,8 @@
     }
     if (!root || !root.querySelectorAll) return;
     const wrappers = new Set();
+    let processedWrappers = 0;
+    let hiddenSlotCount = 0;
 
     if (root instanceof Element) {
       const ownWrapper = root.matches(VIRTUAL_WRAPPER_SELECTOR)
@@ -2603,6 +3790,7 @@
     wrappers.forEach((wrapper) => {
       if (!isEligibleVirtualScrollerWrapper(wrapper)) return;
       if (!wrapper.closest('.vue-recycle-scroller, #scroller')) return;
+      processedWrappers++;
 
       const views = Array.from(wrapper.children)
         .filter(
@@ -2684,8 +3872,10 @@
       if (!views.length || !state.hiddenSlots.size) {
         views.forEach((view) => clearVirtualItemCompaction(view.item));
         clearVirtualWrapperCompaction(wrapper);
+        VIRTUAL_COMPACTION_RUNTIME.delete(wrapper);
         return;
       }
+      hiddenSlotCount += state.hiddenSlots.size;
 
       views.forEach((view) => {
         if (view.hidden) {
@@ -2733,6 +3923,10 @@
         sumHiddenSlotHeights(state)
       );
     });
+    VIRTUAL_COMPACTION_RUNTIME.recordRun(
+      processedWrappers,
+      hiddenSlotCount
+    );
   }
 
   function isWeiboSearchResultPage() {
@@ -2886,6 +4080,20 @@
     return hiddenAny;
   }
 
+  function restoreRecognizedAds(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const nodes = [];
+    if (root instanceof Element && root.matches(HIDDEN_AD_SELECTOR)) {
+      nodes.push(root);
+    }
+    root
+      .querySelectorAll(HIDDEN_AD_SELECTOR)
+      .forEach((node) => nodes.push(node));
+    Array.from(new Set(nodes)).forEach((node) => {
+      node.removeAttribute(HIDDEN_AD_ATTR);
+    });
+  }
+
   function hideBlockedSearchResultCards(root = document) {
     if (
       !isWeiboSearchResultPage() ||
@@ -2921,37 +4129,25 @@
   function initSearchResultBlacklistFilter() {
     if (!isWeiboSearchResultPage()) return;
 
-    let refreshTimer = 0;
     const run = () => {
-      refreshTimer = 0;
       hideBlockedSearchResultCards(document);
     };
     const schedule = () => {
-      if (refreshTimer) return;
-      refreshTimer = setTimeout(run, 40);
+      WB_INTERNAL.dom.schedule('search-blacklist-filter', run, 40);
     };
-    const observer = new MutationObserver(schedule);
-    const attach = () => {
-      const root = document.body || document.documentElement;
-      if (!root) {
-        setTimeout(attach, 50);
-        return;
+    WB_INTERNAL.dom.subscribeMutations(
+      'search-blacklist-filter',
+      (records) => {
+        if (records.some((record) => record.addedNodes?.length)) schedule();
       }
-      observer.observe(root, { childList: true, subtree: true });
-      run();
-    };
-
-    attach();
+    );
+    WB_INTERNAL.dom.subscribeRoute('search-blacklist-filter', schedule);
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', run, { once: true });
+      document.addEventListener('DOMContentLoaded', schedule, { once: true });
+    } else {
+      schedule();
     }
-    window.addEventListener('load', run, { once: true });
-    setTimeout(run, 250);
-    setTimeout(run, 1000);
-    setTimeout(run, 2500);
-    window.addEventListener('beforeunload', () => observer.disconnect(), {
-      once: true,
-    });
+    window.addEventListener('load', schedule, { once: true });
   }
 
   function getSearchResultUserContext(el) {
@@ -3103,6 +4299,26 @@
     };
   }
 
+  function shouldConfirmBeforeBlocking() {
+    return WB_INTERNAL.config.read().confirmBeforeBlocking !== false;
+  }
+
+  function confirmContextUserBlocking(ctx, includeOfficialBlacklist) {
+    if (!shouldConfirmBeforeBlocking()) return Promise.resolve(true);
+    const userLabel = ctx?.name ? `@${ctx.name}` : `UID ${ctx?.uid || ''}`;
+    return showCenteredConfirm({
+      title: includeOfficialBlacklist
+        ? '确认屏蔽并加入新浪微博官方黑名单'
+        : '确认屏蔽用户',
+      message: includeOfficialBlacklist
+        ? `确定屏蔽 ${userLabel} 吗？\n\n该用户会加入本地屏蔽列表和新浪微博官方黑名单。`
+        : `确定在本地屏蔽 ${userLabel} 吗？`,
+      confirmText: '确认屏蔽',
+      cancelText: '取消',
+      danger: true,
+    });
+  }
+
   function addContextUserToBL(ctx, options = {}) {
     if (!ctx?.uid) return;
     const existed = BL.has(ctx.uid);
@@ -3129,7 +4345,7 @@
 
     if (options.showToast !== false) {
       showUserContextToast(
-        existed ? `@${ctx.name} 已在黑名单中` : `已屏蔽 @${ctx.name}`
+        existed ? `@${ctx.name} 已在本地屏蔽列表中` : `已屏蔽 @${ctx.name}`
       );
     }
     return { existed };
@@ -3143,15 +4359,37 @@
     return item ? decodeURIComponent(item.slice(name.length + 1)) : '';
   }
 
+  function isValidOfficialBlockRequestId(requestId) {
+    return /^\d{10,}-[a-z0-9]+$/i.test(String(requestId || ''));
+  }
+
+  function getOfficialBlockRequestStorageKey(requestId) {
+    return `${OFFICIAL_BLOCK_REQUEST_KEY}:${requestId}`;
+  }
+
+  function getOfficialBlockResponseStorageKey(requestId) {
+    return `${OFFICIAL_BLOCK_RESPONSE_KEY}:${requestId}`;
+  }
+
+  function deleteStoredValue(key) {
+    if (_GM_deleteValue) {
+      _GM_deleteValue(key);
+      return;
+    }
+    _GM_setValue(key, null);
+  }
+
   function clearOfficialBlockRelayState(requestId) {
-    const request = _GM_getValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
-    if (request?.id === requestId) {
-      _GM_setValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
-    }
-    const response = _GM_getValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
-    if (response?.id === requestId) {
-      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
-    }
+    deleteStoredValue(getOfficialBlockRequestStorageKey(requestId));
+    deleteStoredValue(getOfficialBlockResponseStorageKey(requestId));
+  }
+
+  function scheduleOfficialBlockRelayClose() {
+    setTimeout(() => {
+      try {
+        window.close();
+      } catch {}
+    }, 250);
   }
 
   function requestOfficialBlockViaMainHost(uid) {
@@ -3160,47 +4398,104 @@
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
-    _GM_setValue(OFFICIAL_BLOCK_REQUEST_KEY, {
+    const requestKey = getOfficialBlockRequestStorageKey(requestId);
+    const responseKey = getOfficialBlockResponseStorageKey(requestId);
+    deleteStoredValue(responseKey);
+    _GM_setValue(requestKey, {
       id: requestId,
       uid: String(uid),
       createdAt: Date.now(),
+      schemaVersion: 1,
     });
 
     const relayURL = new URL('https://weibo.com/');
     relayURL.searchParams.set(OFFICIAL_BLOCK_RELAY_PARAM, requestId);
-    const relayTab = _GM_openInTab(relayURL.href, {
-      active: false,
-      insert: true,
-      setParent: true,
-    });
-
     return new Promise((resolve, reject) => {
-      const startedAt = Date.now();
-      const timer = setInterval(() => {
-        const response = _GM_getValue(OFFICIAL_BLOCK_RESPONSE_KEY, null);
-        if (response?.id === requestId) {
-          clearInterval(timer);
-          try {
-            relayTab?.close?.();
-          } catch {}
-          clearOfficialBlockRelayState(requestId);
-          if (response.ok) {
-            resolve(response.data || { ok: 1 });
-          } else {
-            reject(new Error(response.error || '新浪微博黑名单请求失败'));
-          }
-          return;
-        }
+      let settled = false;
+      let relayTab = null;
+      let listenerId = null;
+      let fallbackTimer = 0;
+      WB_RUNTIME_METRICS.relay.requests++;
+      WB_RUNTIME_METRICS.relay.active++;
 
-        if (Date.now() - startedAt < OFFICIAL_BLOCK_RELAY_TIMEOUT_MS) return;
-        clearInterval(timer);
+      const cleanup = () => {
+        clearTimeout(timeoutTimer);
+        if (fallbackTimer) clearInterval(fallbackTimer);
+        if (_GM_removeValueChangeListener && listenerId !== null) {
+          try {
+            _GM_removeValueChangeListener(listenerId);
+          } catch {}
+        }
         try {
           relayTab?.close?.();
         } catch {}
         clearOfficialBlockRelayState(requestId);
+        WB_RUNTIME_METRICS.relay.active = Math.max(
+          0,
+          WB_RUNTIME_METRICS.relay.active - 1
+        );
+      };
+
+      const finish = (response) => {
+        if (settled || response?.id !== requestId) return false;
+        settled = true;
+        cleanup();
+        if (response.ok) {
+          WB_RUNTIME_METRICS.relay.successes++;
+          resolve(response.data || { ok: 1 });
+        } else {
+          WB_RUNTIME_METRICS.relay.failures++;
+          reject(new Error(response.error || '新浪微博官方黑名单请求失败'));
+        }
+        return true;
+      };
+
+      const timeoutTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        WB_RUNTIME_METRICS.relay.timeouts++;
+        WB_RUNTIME_METRICS.relay.failures++;
+        cleanup();
         reject(new Error('新浪微博主站中继请求超时'));
-      }, 200);
+      }, OFFICIAL_BLOCK_RELAY_TIMEOUT_MS);
+
+      const startCompatibilityPolling = () => {
+        WB_RUNTIME_METRICS.relay.transport = 'compatibility-polling';
+        fallbackTimer = setInterval(() => {
+          finish(_GM_getValue(responseKey, null));
+        }, OFFICIAL_BLOCK_RELAY_COMPAT_POLL_MS);
+      };
+      if (_GM_addValueChangeListener && _GM_removeValueChangeListener) {
+        try {
+          listenerId = _GM_addValueChangeListener(
+            responseKey,
+            (_key, _oldValue, newValue) => {
+              finish(newValue);
+            }
+          );
+        } catch {
+          startCompatibilityPolling();
+        }
+      } else {
+        startCompatibilityPolling();
+      }
+
+      try {
+        relayTab = _GM_openInTab(relayURL.href, {
+          active: false,
+          insert: true,
+          setParent: true,
+        });
+      } catch (error) {
+        finish({
+          id: requestId,
+          ok: false,
+          error: error?.message || '无法打开新浪微博主站中继页',
+        });
+        return;
+      }
+
+      finish(_GM_getValue(responseKey, null));
     });
   }
 
@@ -3214,19 +4509,28 @@
       );
     } catch {}
     if (!requestId) return;
+    if (!isValidOfficialBlockRequestId(requestId)) {
+      scheduleOfficialBlockRelayClose();
+      return;
+    }
 
-    const request = _GM_getValue(OFFICIAL_BLOCK_REQUEST_KEY, null);
+    const requestKey = getOfficialBlockRequestStorageKey(requestId);
+    const responseKey = getOfficialBlockResponseStorageKey(requestId);
+    const request = _GM_getValue(requestKey, null);
     if (
       request?.id !== requestId ||
       !/^\d{5,}$/.test(String(request?.uid || '')) ||
       Date.now() - Number(request?.createdAt || 0) >
         OFFICIAL_BLOCK_RELAY_TIMEOUT_MS
     ) {
-      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+      _GM_setValue(responseKey, {
         id: requestId,
         ok: false,
         error: '新浪微博主站中继请求无效或已过期',
+        completedAt: Date.now(),
+        schemaVersion: 1,
       });
+      scheduleOfficialBlockRelayClose();
       return;
     }
 
@@ -3234,24 +4538,24 @@
       const data = await addUserToWeiboBlacklist(request.uid, {
         allowRelay: false,
       });
-      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+      _GM_setValue(responseKey, {
         id: requestId,
         ok: true,
         data,
+        completedAt: Date.now(),
+        schemaVersion: 1,
       });
     } catch (err) {
-      _GM_setValue(OFFICIAL_BLOCK_RESPONSE_KEY, {
+      _GM_setValue(responseKey, {
         id: requestId,
         ok: false,
         error: err?.message || String(err),
+        completedAt: Date.now(),
+        schemaVersion: 1,
       });
     }
 
-    setTimeout(() => {
-      try {
-        window.close();
-      } catch {}
-    }, 250);
+    scheduleOfficialBlockRelayClose();
   }
 
   async function addUserToWeiboBlacklist(uid, options = {}) {
@@ -3274,7 +4578,7 @@
     // 微博 WAF 会拒绝搜索子域发起的跨域拉黑请求；交给后台主站页同源执行。
     if (location.hostname === 's.weibo.com') {
       if (options.allowRelay === false) {
-        throw new Error('新浪微博黑名单请求必须在主站同源执行');
+        throw new Error('新浪微博官方黑名单请求必须在主站同源执行');
       }
       return requestOfficialBlockViaMainHost(uid);
     }
@@ -3307,14 +4611,14 @@
   async function addContextUserToBLAndWeibo(ctx) {
     if (!ctx?.uid) return;
     addContextUserToBL(ctx, { showToast: false });
-    showUserContextToast(`已本地屏蔽 @${ctx.name}，正在加入新浪微博黑名单...`);
+    showUserContextToast(`已本地屏蔽 @${ctx.name}，正在加入新浪微博官方黑名单...`);
 
     try {
       await addUserToWeiboBlacklist(ctx.uid);
-      showUserContextToast(`已屏蔽 @${ctx.name}，并加入新浪微博黑名单`);
+      showUserContextToast(`已屏蔽 @${ctx.name}，并加入新浪微博官方黑名单`);
     } catch (err) {
-      console.warn('[WB-BL] 新浪微博黑名单加入失败', err);
-      showUserContextToast(`本地已屏蔽 @${ctx.name}，新浪微博黑名单加入失败`);
+      console.warn('[WB-BL] 新浪微博官方黑名单加入失败', err);
+      showUserContextToast(`本地已屏蔽 @${ctx.name}，新浪微博官方黑名单加入失败`);
     }
   }
 
@@ -3363,6 +4667,11 @@
       .wb-user-context-menu button:hover {
         background: #f5f5f5;
       }
+      .wb-user-context-menu-separator {
+        height: 1px;
+        margin: 5px 6px;
+        background: rgba(0,0,0,.1);
+      }
       .wb-user-context-toast {
         position: fixed;
         left: 50%;
@@ -3403,9 +4712,10 @@
       menu.className = 'wb-user-context-menu';
       menu.setAttribute('data-__wb_context_menu_ready', '1');
       menu.innerHTML = `
+        <button type="button" data-action="open">在新选项卡中打开链接</button>
+        <div class="wb-user-context-menu-separator" role="separator"></div>
         <button type="button" data-action="block"></button>
         <button type="button" data-action="block-official"></button>
-        <button type="button" data-action="open">在新选项卡中打开链接</button>
       `;
       menu.addEventListener('pointerdown', (e) => e.stopPropagation());
       menu.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -3414,15 +4724,25 @@
         e.preventDefault();
         e.stopPropagation();
       });
-      menu.addEventListener('click', (e) => {
+      menu.addEventListener('click', async (e) => {
         e.stopPropagation();
         const btn = e.target.closest('button[data-action]');
         if (!btn || !activeCtx) return;
         const action = btn.getAttribute('data-action');
         const ctx = activeCtx;
         hideMenu({ force: true });
-        if (action === 'block') addContextUserToBL(ctx);
-        if (action === 'block-official') addContextUserToBLAndWeibo(ctx);
+        if (
+          action === 'block' &&
+          (await confirmContextUserBlocking(ctx, false))
+        ) {
+          addContextUserToBL(ctx);
+        }
+        if (
+          action === 'block-official' &&
+          (await confirmContextUserBlocking(ctx, true))
+        ) {
+          addContextUserToBLAndWeibo(ctx);
+        }
         if (action === 'open') openContextUserProfile(ctx);
       });
       (document.body || document.documentElement).appendChild(menu);
@@ -3500,7 +4820,7 @@
       blockBtn.textContent = BL.has(ctx.uid)
         ? `已屏蔽 @${ctx.name}`
         : `屏蔽 @${ctx.name}`;
-      officialBlockBtn.textContent = `屏蔽 @${ctx.name}（同时加入新浪微博黑名单）`;
+      officialBlockBtn.textContent = `屏蔽 @${ctx.name}（同时加入新浪微博官方黑名单）`;
       positionMenu(menu, e.clientX, e.clientY);
     };
 
@@ -3519,8 +4839,8 @@
       'scroll',
       () => {
         const menu = document.querySelector('.wb-user-context-menu');
-        if (menu && getComputedStyle(menu).display !== 'none') return;
-        hideMenu();
+        if (!menu || getComputedStyle(menu).display === 'none') return;
+        hideMenu({ force: true });
       },
       true
     );
@@ -3606,40 +4926,37 @@
     }
   }
 
-  let queuedBlockedDOMRefreshTimer = 0;
   function queueBlockedDOMRefresh(root = document, delay = 60) {
-    if (queuedBlockedDOMRefreshTimer) return;
-    queuedBlockedDOMRefreshTimer = setTimeout(() => {
-      queuedBlockedDOMRefreshTimer = 0;
-      hideBlockedDOMPosts(root || document);
-    }, delay);
+    WB_INTERNAL.dom.schedule(
+      'blocked-content-filter',
+      () => hideBlockedDOMPosts(root || document),
+      delay
+    );
   }
 
-  let layoutNudgeTimer = 0;
   function nudgeTimelineLayout() {
-    if (layoutNudgeTimer) return;
-    layoutNudgeTimer = setTimeout(() => {
-      layoutNudgeTimer = 0;
-      document.dispatchEvent(
-        new CustomEvent(LAYOUT_REFRESH_EVENT, {
-          detail: { reason: 'blocked-content' },
-        })
-      );
-      setTimeout(() => {
+    WB_INTERNAL.dom.schedule(
+      'blocked-layout-primary',
+      () => {
         document.dispatchEvent(
           new CustomEvent(LAYOUT_REFRESH_EVENT, {
             detail: { reason: 'blocked-content' },
           })
         );
-      }, 160);
-      setTimeout(() => {
-        document.dispatchEvent(
-          new CustomEvent(LAYOUT_REFRESH_EVENT, {
-            detail: { reason: 'blocked-content' },
-          })
+        WB_INTERNAL.dom.schedule(
+          'blocked-layout-followup',
+          () => {
+            document.dispatchEvent(
+              new CustomEvent(LAYOUT_REFRESH_EVENT, {
+                detail: { reason: 'blocked-content' },
+              })
+            );
+          },
+          240
         );
-      }, 420);
-    }, 30);
+      },
+      30
+    );
   }
 
   function scheduleBlockedDOMRefresh() {
@@ -3647,14 +4964,12 @@
       restoreHiddenRelationshipItems(document);
       return;
     }
-    const run = () => hideBlockedDOMPosts(document);
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(run);
-    }
-    setTimeout(run, 80);
-    setTimeout(run, 350);
-    setTimeout(run, 900);
-    setTimeout(run, 1600);
+    queueBlockedDOMRefresh(document, 16);
+    WB_INTERNAL.dom.schedule(
+      'blocked-content-followup',
+      () => hideBlockedDOMPosts(document),
+      320
+    );
   }
 
   function scheduleBlockedDOMRefreshWhenPageReady() {
@@ -3670,7 +4985,7 @@
       run();
     }
     window.addEventListener('load', run, { once: true });
-    setTimeout(run, 2500);
+    WB_INTERNAL.dom.schedule('blocked-page-ready-followup', run, 1200);
   }
 
   let nativeVirtualGapRefreshFrame = 0;
@@ -3685,14 +5000,17 @@
     });
   }
 
-  function isRelevantBlockedLayoutMutationTarget(target) {
+  function isRelevantBlockedLayoutMutationTarget(
+    target,
+    hasHiddenLayoutState = null
+  ) {
     if (!(target instanceof Element)) return false;
-    if (
-      !hasHiddenNonCommentContent(document) &&
-      !hasNativeHiddenVirtualGaps(document)
-    ) {
-      return false;
-    }
+    const hasHiddenState =
+      typeof hasHiddenLayoutState === 'boolean'
+        ? hasHiddenLayoutState
+        : hasHiddenNonCommentContent(document) ||
+          hasNativeHiddenVirtualGaps(document);
+    if (!hasHiddenState) return false;
     if (isInsideCommentContentRoot(target)) return false;
     if (
       target.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
@@ -3711,76 +5029,125 @@
     );
   }
 
-  // === 全局 Fetch 拦截 ===
+  function classifyInterceptedRequest(url) {
+    const parsed = parseFirstPartyWeiboURL(String(url || ''));
+    if (!parsed) {
+      return {
+        relevant: false,
+        url: String(url || ''),
+      };
+    }
+    const path = parsed.pathname;
+    const filterUser = /^\/ajax\/statuses\/filterUser\/?$/i.test(path);
+    const unfilterUser = /^\/ajax\/statuses\/unfilterUser\/?$/i.test(path);
+    const unreadTimeline = /\/unreadfriendstimeline(?:\/|$)/i.test(path);
+    const relationshipFriends = isRelationshipFriendsURL(parsed.href);
+    const filterContent = isFilterableContentURL(parsed.href);
+    return {
+      relevant:
+        filterUser ||
+        unfilterUser ||
+        unreadTimeline ||
+        relationshipFriends ||
+        filterContent,
+      url: parsed.href,
+      filterUser,
+      unfilterUser,
+      unreadTimeline,
+      relationshipFriends,
+      filterContent,
+    };
+  }
+
+  function createCompatibleJSONResponse(originalResponse, data) {
+    if ([204, 205, 304].includes(originalResponse.status)) {
+      return originalResponse;
+    }
+    const headers = new Headers(originalResponse.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    headers.set('content-type', 'application/json; charset=utf-8');
+    const rebuilt = new Response(JSON.stringify(data), {
+      status: originalResponse.status,
+      statusText: originalResponse.statusText,
+      headers,
+    });
+    const nativeMetadata = new Set(['url', 'redirected', 'type']);
+    return new Proxy(rebuilt, {
+      get(target, property) {
+        if (nativeMetadata.has(property)) return originalResponse[property];
+        if (property === 'clone') {
+          return () =>
+            createCompatibleJSONResponse(originalResponse.clone(), data);
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  const EMPTY_UNREAD_TIMELINE_RESPONSE = Object.freeze({
+    ok: 1,
+    statuses: [],
+    since_id_str: '0',
+    max_id_str: '0',
+  });
+
+  // === 仅处理已知微博接口的 Fetch 拦截 ===
   window.fetch = async function (input, init) {
-    const url =
+    const rawURL =
       typeof input === 'string'
         ? input
         : input instanceof URL
           ? input.href
           : input?.url || '';
+    const request = classifyInterceptedRequest(rawURL);
     // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
-    if (
-      timelineDefault.value &&
-      url.includes('unreadfriendstimeline')
-    ) {
+    if (timelineDefault.value && request.unreadTimeline) {
       return new Response(
-        JSON.stringify({
-          ok: 1,
-          statuses: [],
-          since_id_str: '0',
-          max_id_str: '0',
-        }),
+        JSON.stringify(EMPTY_UNREAD_TIMELINE_RESPONSE),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }
       );
     }
-    const isFilterUserRequest =
-      typeof url === 'string' && url.includes('/filterUser');
-    const isUnfilterUserRequest =
-      typeof url === 'string' && url.includes('/unfilterUser');
     const filterUID =
-      isFilterUserRequest || isUnfilterUserRequest
-        ? parseUIDFromRequest(url, init?.body)
+      request.filterUser || request.unfilterUser
+        ? parseUIDFromRequest(request.url, init?.body)
         : '';
 
     const res = await WB_BL_NATIVE.fetch(input, init);
 
-    if (isRelationshipFriendsURL(url)) {
+    if (request.relationshipFriends) {
       try {
         const data = await res.clone().json();
-        return new Response(
-          JSON.stringify(normalizeRelationshipFriendsData(data)),
-          {
-            status: res.status,
-            statusText: res.statusText,
-            headers: res.headers,
-          }
-        );
+        const normalized = normalizeRelationshipFriendsData(data);
+        if (normalized !== data) {
+          return createCompatibleJSONResponse(res, normalized);
+        }
+        return res;
       } catch {}
     }
 
     if (filterUID && (await didFilterRequestSucceed(res))) {
-      if (isFilterUserRequest) {
+      if (request.filterUser) {
         addUIDToLocalBL(filterUID);
         hideBlockedDOMPosts(document);
         scheduleBlockedDOMRefresh();
       }
-      if (isUnfilterUserRequest) {
+      if (request.unfilterUser) {
         removeUIDFromLocalBL(filterUID);
       }
     }
 
-    if (isFilterableContentURL(url)) {
+    if (request.filterContent) {
       try {
         const data = await res.clone().json();
-        return new Response(JSON.stringify(filterContentResponseData(data, url)), {
-          status: res.status,
-          statusText: res.statusText,
-          headers: res.headers,
-        });
+        const transformed = transformContentResponseData(data, request.url);
+        if (transformed.changed) {
+          return createCompatibleJSONResponse(res, transformed.data);
+        }
       } catch {}
     }
     return res;
@@ -3812,69 +5179,68 @@
     } catch {}
   }
 
+  const xhrRequestMetadata = new WeakMap();
+
   XMLHttpRequest.prototype.open = function (method, url, ...args) {
-    this._url = url instanceof URL ? url.href : String(url || '');
+    const rawURL = url instanceof URL ? url.href : String(url || '');
+    xhrRequestMetadata.set(this, classifyInterceptedRequest(rawURL));
     return WB_BL_NATIVE.XHROpen.call(this, method, url, ...args);
   };
   XMLHttpRequest.prototype.send = function (body) {
+    const request = xhrRequestMetadata.get(this);
+    if (!request?.relevant) {
+      return WB_BL_NATIVE.XHRSend.call(this, body);
+    }
     this.addEventListener('readystatechange', () => {
-      if (this.readyState === 4 && this.status === 200 && this._url) {
-        const url = String(this._url || '');
-        const isFilterUserRequest = url.includes('/filterUser');
-        const isUnfilterUserRequest = url.includes('/unfilterUser');
-        if (isFilterUserRequest || isUnfilterUserRequest) {
-          const uid = parseUIDFromRequest(url, body);
+      if (this.readyState === 4 && this.status === 200) {
+        if (request.filterUser || request.unfilterUser) {
+          const uid = parseUIDFromRequest(request.url, body);
           let ok = true;
           try {
             const data = JSON.parse(this.responseText);
             ok = data?.ok !== 0;
           } catch {}
           if (uid && ok) {
-            if (isFilterUserRequest) {
+            if (request.filterUser) {
               addUIDToLocalBL(uid);
               hideBlockedDOMPosts(document);
               scheduleBlockedDOMRefresh();
             }
-            if (isUnfilterUserRequest) {
+            if (request.unfilterUser) {
               removeUIDFromLocalBL(uid);
             }
           }
         }
 
         // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
-        if (
-          timelineDefault.value &&
-          url.includes('unreadfriendstimeline')
-        ) {
+        if (timelineDefault.value && request.unreadTimeline) {
           defineXHRTextResponse(
             this,
-            JSON.stringify({
-              ok: 1,
-              statuses: [],
-              since_id_str: '0',
-              max_id_str: '0',
-            })
+            JSON.stringify(EMPTY_UNREAD_TIMELINE_RESPONSE)
           );
           return;
         }
-        if (isRelationshipFriendsURL(url)) {
+        if (request.relationshipFriends) {
           try {
             const data = JSON.parse(this.responseText);
-            defineXHRTextResponse(
-              this,
-              JSON.stringify(normalizeRelationshipFriendsData(data))
-            );
+            const normalized = normalizeRelationshipFriendsData(data);
+            if (normalized !== data) {
+              defineXHRTextResponse(this, JSON.stringify(normalized));
+            }
           } catch {}
           return;
         }
-        // 过滤黑名单内容
-        if (isFilterableContentURL(url)) {
+        // 按本地屏蔽列表过滤内容
+        if (request.filterContent) {
           try {
-            const o = JSON.parse(this.responseText);
-            defineXHRTextResponse(
-              this,
-              JSON.stringify(filterContentResponseData(o, url))
+            const data = JSON.parse(this.responseText);
+            const transformed = transformContentResponseData(
+              data,
+              request.url
             );
+            if (transformed.changed) {
+              defineXHRTextResponse(this, JSON.stringify(transformed.data));
+            }
           } catch {}
         }
       }
@@ -3886,9 +5252,12 @@
   function getFilteredWebSocketEvent(evt, url = '') {
     if (!evt || typeof evt.data !== 'string') return evt;
     try {
-      const data = JSON.stringify(
-        filterContentResponseData(JSON.parse(evt.data), url)
+      const transformed = transformContentResponseData(
+        JSON.parse(evt.data),
+        url
       );
+      if (!transformed.changed) return evt;
+      const data = JSON.stringify(transformed.data);
       return new Proxy(evt, {
         get(target, prop, receiver) {
           if (prop === 'data') return data;
@@ -3906,13 +5275,14 @@
       if (protocols === undefined) super(url);
       else super(url, protocols);
       this.__wbURL = String(url || '');
+      this.__wbFilterMessages = isFilterableContentURL(this.__wbURL);
       this.__wbMessageListeners = new WeakMap();
       this.__wbOnMessage = null;
       this.__wbOnMessageWrapper = null;
     }
 
     addEventListener(type, listener, options) {
-      if (type !== 'message' || !listener) {
+      if (!this.__wbFilterMessages || type !== 'message' || !listener) {
         return super.addEventListener(type, listener, options);
       }
       if (
@@ -3925,7 +5295,7 @@
       if (!wrapped) {
         wrapped =
           typeof listener === 'function'
-             ? function (evt) {
+            ? function (evt) {
                 return listener.call(
                   this,
                   getFilteredWebSocketEvent(evt, this.__wbURL)
@@ -3952,10 +5322,16 @@
     }
 
     get onmessage() {
-      return this.__wbOnMessage;
+      return this.__wbFilterMessages
+        ? this.__wbOnMessage
+        : super.onmessage;
     }
 
     set onmessage(listener) {
+      if (!this.__wbFilterMessages) {
+        super.onmessage = listener;
+        return;
+      }
       if (this.__wbOnMessageWrapper) {
         super.removeEventListener('message', this.__wbOnMessageWrapper);
       }
@@ -3975,74 +5351,70 @@
 
   // === MutationObserver 过滤 ===
   (function () {
-    const observeOptions = {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['style', 'class'],
-    };
-    const obs = new MutationObserver((ms) => {
-      clearTimeout(window._wbbl_t);
-      window._wbbl_t = setTimeout(() => {
-        if (isRelationshipListPage()) {
-          restoreHiddenRelationshipItems(document);
-          return;
+    let pendingMutations = [];
+    const processMutations = () => {
+      const ms = pendingMutations;
+      pendingMutations = [];
+      if (isRelationshipListPage()) {
+        restoreHiddenRelationshipItems(document);
+        return;
+      }
+      const attributeMutations = ms.filter(
+        (mutation) => mutation.type === 'attributes'
+      );
+      const hasHiddenLayoutState =
+        attributeMutations.length > 0 &&
+        (hasHiddenNonCommentContent(document) ||
+          hasNativeHiddenVirtualGaps(document));
+      const needsFullRefresh = attributeMutations.some((mutation) =>
+        isRelevantBlockedLayoutMutationTarget(
+          mutation.target,
+          hasHiddenLayoutState
+        )
+      );
+      const addedRoots = WB_INTERNAL.dom.collectAddedRoots(ms);
+      const hasHiddenFeedContent =
+        addedRoots.length > 0 && hasHiddenNonCommentContent(document);
+      const hasNativeHiddenGap =
+        addedRoots.length > 0 && hasNativeHiddenVirtualGaps(document);
+      addedRoots.forEach((addedElement) => {
+        hideRecognizedAds(addedElement);
+        removeWeiboFloatingVideoPlayers(addedElement);
+        suppressFloatingVideoPlayers(addedElement);
+        if (
+          hasHiddenFeedContent ||
+          hasNativeHiddenGap ||
+          addedElement.matches(DOM_UID_SELECTOR) ||
+          addedElement.querySelector(DOM_UID_SELECTOR)
+        ) {
+          hideBlockedDOMPosts(hasNativeHiddenGap ? document : addedElement);
         }
-        let needsFullRefresh = false;
-        const hasHiddenFeedContent = hasHiddenNonCommentContent(document);
-        const hasNativeHiddenGap = hasNativeHiddenVirtualGaps(document);
-        ms.forEach((m) => {
-          if (
-            m.type === 'attributes' &&
-            isRelevantBlockedLayoutMutationTarget(m.target)
-          ) {
-            needsFullRefresh = true;
-            return;
-          }
-          Array.from(m.addedNodes).forEach((n) => {
-            if (n?.nodeType === 1) {
-              const addedElement = n;
-              hideRecognizedAds(addedElement);
-              removeWeiboFloatingVideoPlayers(addedElement);
-              suppressFloatingVideoPlayers(addedElement);
-              if (
-                hasHiddenFeedContent ||
-                hasNativeHiddenGap ||
-                addedElement.matches(DOM_UID_SELECTOR) ||
-                addedElement.querySelector(DOM_UID_SELECTOR)
-              ) {
-                hideBlockedDOMPosts(
-                  hasNativeHiddenGap ? document : addedElement
-                );
-              }
-              hideBlockedCommentRoots(addedElement);
-            }
-          });
-        });
-        if (needsFullRefresh) queueBlockedDOMRefresh(document, 30);
-      }, 60);
+        hideBlockedCommentRoots(addedElement);
+      });
+      if (needsFullRefresh) queueBlockedDOMRefresh(document, 30);
+    };
+    WB_INTERNAL.dom.subscribeMutations('content-filter', (mutations) => {
+      pendingMutations.push(...mutations);
+      WB_INTERNAL.dom.schedule('content-mutation-batch', processMutations, 60);
     });
-    const attach = () => {
+    const refreshForRoute = () => {
+      syncRelationshipPageMode();
       const root = document.body || document.documentElement;
       if (root) {
+        clearVirtualCompactionState(root);
         hideBlockedDOMPosts(root);
-        obs.observe(root, observeOptions);
-        window.addEventListener('beforeunload', () => obs.disconnect());
-        // SPA 路由重置
-        const push = history.pushState;
-        history.pushState = function (s, title, url) {
-          push.call(this, s, title, url);
-          obs.disconnect();
-          const nextRoot = document.body || document.documentElement;
-          syncRelationshipPageMode();
-          hideBlockedDOMPosts(nextRoot);
-          obs.observe(nextRoot, observeOptions);
-        };
-      } else {
-        setTimeout(attach, 50);
       }
     };
-    attach();
+    WB_INTERNAL.dom.subscribeRoute('content-filter', () => {
+      WB_INTERNAL.dom.schedule('content-route-refresh', refreshForRoute, 30);
+    });
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', refreshForRoute, {
+        once: true,
+      });
+    } else {
+      refreshForRoute();
+    }
   })();
 
   window.addEventListener('scroll', refreshNativeVirtualGapsOnScroll, {
@@ -4071,16 +5443,22 @@
     );
     const starStatus = isDisabled ? '🔕 Star提醒已关闭' : '🔔 Star提醒已开启';
 
-    alert(
-      `Weibo Retro Twitter-Style Clone v${SCRIPT_VERSION}\n` +
+    showCenteredConfirm({
+      title: '关于',
+      message:
+        `Weibo Retro Twitter-Style Clone v${SCRIPT_VERSION}\n` +
         `模仿早期Twitter时间线的完整版微博增强工具\n\n` +
         `当前缓存: ${BL.size} 个用户\n` +
         `${starStatus}\n\n` +
         `作者: DanielZenFlow\n` +
-        `许可: MIT License\n` +
-        `GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)\n\n` +
-        `感谢使用！如果有帮助请给我们 Star ⭐`
-    );
+        `许可: MIT License\n\n` +
+        `感谢使用！如果有帮助请给我们 Star ⭐`,
+      linkText: 'GitHub 项目主页',
+      linkURL:
+        'https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone',
+      confirmText: '关闭',
+      hideCancel: true,
+    });
   });
 
   console.log(
@@ -4095,87 +5473,98 @@
 (function () {
   'use strict';
   const UID_KEY = 'WB_BL_list';
+  const UID_EXCLUSION_KEY = 'WB_BL_local_exclusions';
   const UID_MANAGER_PAGE_SIZE = 50;
   const MAX_IMPORT_FILE_SIZE = 2 * 1024 * 1024;
   const MAX_IMPORT_UIDS = 100000;
 
-  const DEFAULTS = {
-    hideHotSearch: true,
-    hideSuggestedPeople: true,
-    hideFollowRecommendations: true,
-    hideCommonFunctions: true,
-    hideFanGroups: true,
-    hideFrequentSuperTopics: true,
-    hideNavVideo: false,
-    hideNavRecommend: false,
-    hideNavGame: true,
-    defaultLatestTimeline: true,
-    hideSearchRelatedUsers: true,
-    hideBlacklistPosts: true,
-    hideBlacklistComments: true,
-    hideBlacklistSearchResults: true,
-    hideBlacklistUserCards: true,
-    hideBlacklistInteractions: true,
-    hideAds: true,
-    showSettingsButton: true,
-  };
+  function requestCenteredConfirm(options) {
+    if (typeof WB_INTERNAL.confirm !== 'function') {
+      return Promise.resolve(false);
+    }
+    return WB_INTERNAL.confirm(options);
+  }
+
+  function notify(message, options = {}) {
+    if (typeof WB_INTERNAL.notify === 'function') {
+      return WB_INTERNAL.notify(message, options);
+    }
+    console.info(message);
+    return null;
+  }
+
+  const DEFAULTS = WB_INTERNAL.config.defaults;
 
   function normalizeCfg(rawCfg) {
-    const raw = rawCfg && typeof rawCfg === 'object' ? rawCfg : {};
-    const cfg = Object.assign({}, DEFAULTS, raw);
-    if (raw.hideNavVideoRecommend === true) {
-      if (raw.hideNavVideo === undefined) cfg.hideNavVideo = true;
-      if (raw.hideNavRecommend === undefined) cfg.hideNavRecommend = true;
-    }
-    delete cfg.hideNavVideoRecommend;
-    return cfg;
+    return WB_INTERNAL.config.normalize(rawCfg);
   }
 
   function loadCfg() {
-    try {
-      return normalizeCfg(JSON.parse(GM_getValue('cfg', '{}') || '{}'));
-    } catch {
-      return normalizeCfg();
-    }
+    return WB_INTERNAL.config.read();
   }
   function saveCfg(cfg) {
-    GM_setValue('cfg', JSON.stringify(cfg || {}));
+    return WB_INTERNAL.config.write(cfg);
   }
   let CFG = loadCfg();
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
 
   // ---- BL Store helpers (operate on GM cache only) ----
+  function readBLExclusionSet() {
+    const raw = GM_getValue(UID_EXCLUSION_KEY, '');
+    return new Set(
+      String(raw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => /^\d{5,}$/.test(s))
+    );
+  }
+  function writeBLExclusionSet(set) {
+    GM_setValue(UID_EXCLUSION_KEY, Array.from(set).join(','));
+  }
   function readBLSet() {
     const raw = GM_getValue(UID_KEY, '');
     if (!raw) return new Set();
+    const exclusions = readBLExclusionSet();
     return new Set(
-      raw
+      String(raw)
         .split(',')
         .map((s) => String(s).trim())
-        .filter((s) => /^\d{5,}$/.test(s))
+        .filter((s) => /^\d{5,}$/.test(s) && !exclusions.has(s))
     );
   }
   function writeBLSet(set) {
     GM_setValue(UID_KEY, Array.from(set).join(','));
   }
   function syncRuntimeBL(options = {}) {
-    return window.WB_BL_SYNC?.reloadFromStorage?.(options);
+    return WB_INTERNAL.blSync?.reloadFromStorage?.(options);
   }
   function addToBL(uids) {
     const set = readBLSet();
+    const exclusions = readBLExclusionSet();
+    let exclusionsChanged = false;
     const addedUIDs = [];
     uids.forEach((u) => {
       const uid = String(u).trim();
+      if (!/^\d{5,}$/.test(uid)) return;
+      if (exclusions.delete(uid)) exclusionsChanged = true;
       if (!set.has(uid)) addedUIDs.push(uid);
       set.add(uid);
     });
     writeBLSet(set);
+    if (exclusionsChanged) writeBLExclusionSet(exclusions);
     return { size: set.size, added: addedUIDs.length };
   }
   function removeFromBL(uids) {
     const set = readBLSet();
-    uids.forEach((u) => set.delete(String(u).trim()));
+    const exclusions = readBLExclusionSet();
+    uids.forEach((u) => {
+      const uid = String(u).trim();
+      if (!/^\d{5,}$/.test(uid)) return;
+      set.delete(uid);
+      exclusions.add(uid);
+    });
     writeBLSet(set);
+    writeBLExclusionSet(exclusions);
     return set.size;
   }
   function parseUIDInput(text) {
@@ -4185,7 +5574,7 @@
       .filter((s) => /^\d{5,}$/.test(s));
   }
 
-  // 导出黑名单备份为 JSON 文件
+  // 导出本地屏蔽列表备份为 JSON 文件
   function exportBlacklist() {
     const blSet = readBLSet();
     const uids = Array.from(blSet);
@@ -4201,7 +5590,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `weibo-blacklist-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `weibo-local-block-list-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -4209,7 +5598,7 @@
     return uids.length;
   }
 
-  // 导入黑名单备份，支持 JSON 或纯文本 UID 列表。
+  // 导入本地屏蔽列表备份，支持 JSON 或纯文本 UID 列表。
   function importBlacklist(file, mode = 'merge') {
     return new Promise((resolve, reject) => {
       if (!file) {
@@ -4217,7 +5606,7 @@
         return;
       }
       if (file.size > MAX_IMPORT_FILE_SIZE) {
-        reject(new Error('文件过大，请导入 2MB 以内的黑名单文件'));
+        reject(new Error('文件过大，请导入 2MB 以内的本地屏蔽列表文件'));
         return;
       }
 
@@ -4265,6 +5654,7 @@
           }
 
           const currentSet = readBLSet();
+          const exclusions = readBLExclusionSet();
           const oldSize = currentSet.size;
           let newSize,
             addedCount,
@@ -4276,7 +5666,12 @@
           if (mode === 'replace') {
             // 替换模式：清空后导入
             const newSet = new Set(uidsToImport);
+            currentSet.forEach((uid) => {
+              if (!newSet.has(uid)) exclusions.add(uid);
+            });
+            newSet.forEach((uid) => exclusions.delete(uid));
             writeBLSet(newSet);
+            writeBLExclusionSet(exclusions);
             newSize = newSet.size;
             addedCount = addedUIDs.length;
             removedCount = Array.from(currentSet).filter(
@@ -4284,8 +5679,12 @@
             ).length;
           } else {
             // 合并模式（默认）：保留现有 + 添加新的
-            uidsToImport.forEach((u) => currentSet.add(u));
+            uidsToImport.forEach((u) => {
+              exclusions.delete(u);
+              currentSet.add(u);
+            });
             writeBLSet(currentSet);
+            writeBLExclusionSet(exclusions);
             newSize = currentSet.size;
             addedCount = newSize - oldSize;
           }
@@ -4419,15 +5818,6 @@
     );
   }
 
-  // 恢复所有被脚本隐藏的面板
-  function showAllHiddenPanels() {
-    document
-      .querySelectorAll('[data-__wb_hidden_by_userscript]')
-      .forEach((panel) => {
-        panel.style.removeProperty('display');
-        panel.removeAttribute('data-__wb_hidden_by_userscript');
-      });
-  }
   function promoteHiddenSidebarShells(root = document) {
     if (!root || !root.querySelectorAll) return;
     const hidden = [];
@@ -4684,6 +6074,31 @@
     }
   }
 
+  function restoreManagedPanels() {
+    document
+      .querySelectorAll('[data-__wb_hidden_by_userscript]')
+      .forEach((panel) => {
+        panel.style.removeProperty('display');
+        panel.removeAttribute('data-__wb_hidden_by_userscript');
+        panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
+      });
+    document
+      .querySelectorAll('[data-__wb_first_visible_sidebar]')
+      .forEach((panel) => {
+        const original = panel.getAttribute('data-__wb_original_margin_top');
+        if (original) panel.style.marginTop = original;
+        else panel.style.removeProperty('margin-top');
+        panel.removeAttribute('data-__wb_first_visible_sidebar');
+      });
+    restoreSidebarAnchorAlignment();
+  }
+
+  function applyPanelSettingsNow() {
+    restoreManagedPanels();
+    hidePanels(document);
+    queuePanelRefresh(document, 80);
+  }
+
   let sidebarScrollRefreshFrame = 0;
   function refreshSidebarAlignmentNow() {
     if (isComposerAnchorVisible()) {
@@ -4704,23 +6119,19 @@
     });
   }
 
-  let queuedPanelRefreshTimer = 0;
   function queuePanelRefresh(root = document, delay = 80, options = {}) {
-    clearTimeout(queuedPanelRefreshTimer);
-    queuedPanelRefreshTimer = setTimeout(() => {
-      queuedPanelRefreshTimer = 0;
-      hidePanels(root || document, options);
-    }, delay);
+    WB_INTERNAL.dom.schedule(
+      'sidebar-panel-refresh',
+      () => hidePanels(root || document, options),
+      delay
+    );
   }
 
   function scheduleInitialPanelAlignment() {
     const run = () => hidePanels(document);
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(run);
-    }
-    [80, 220, 520, 1000, 1800, 2800].forEach((delay) => {
-      setTimeout(run, delay);
-    });
+    WB_INTERNAL.dom.schedule('sidebar-initial-primary', run, 16);
+    WB_INTERNAL.dom.schedule('sidebar-initial-secondary', run, 180);
+    WB_INTERNAL.dom.schedule('sidebar-initial-followup', run, 900);
   }
 
   function hideFollowRecommendationPanel(root = document) {
@@ -4762,10 +6173,13 @@
       }
 
       const target = findSearchHotBandContainer(panel);
-      if (target && target.isConnected) {
-        const parent = target.parentElement;
-        target.remove();
-        removeEmptyHotBandShells(parent);
+      if (
+        target &&
+        target.isConnected &&
+        !target.hasAttribute('data-__wb_hidden_by_userscript')
+      ) {
+        target.style.setProperty('display', 'none', 'important');
+        target.setAttribute('data-__wb_hidden_by_userscript', '1');
       }
     });
   }
@@ -4799,21 +6213,6 @@
     }
     return panel;
   }
-  function removeEmptyHotBandShells(start) {
-    let cur = start;
-    while (
-      cur &&
-      cur !== document.body &&
-      cur !== document.documentElement &&
-      !normText(cur.textContent) &&
-      cur.children.length === 0
-    ) {
-      const parent = cur.parentElement;
-      cur.remove();
-      cur = parent;
-    }
-  }
-
   if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', () => {
       hidePanels();
@@ -4842,14 +6241,11 @@
       panelRefreshOptions
     );
   });
-  const mo = new MutationObserver((m) => {
-    for (const r of m) {
-      for (const n of r.addedNodes) {
-        if (n.nodeType === 1) hidePanels(n);
-      }
-    }
+  WB_INTERNAL.dom.subscribeMutations('sidebar-panels', (mutations) => {
+    WB_INTERNAL.dom
+      .collectAddedRoots(mutations)
+      .forEach((root) => hidePanels(root));
   });
-  mo.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('scroll', refreshSidebarAlignmentOnScroll, {
     passive: true,
   });
@@ -4857,10 +6253,17 @@
     passive: true,
     capture: true,
   });
-  setInterval(() => {
-    if (!document.querySelector('.wbpro-side')) return;
-    refreshSidebarAlignmentNow();
-  }, 600);
+  window.addEventListener('resize', () => {
+    queuePanelRefresh(document, 80);
+  });
+  WB_INTERNAL.dom.subscribeRoute('sidebar-panels', () => {
+    queuePanelRefresh(document, 80);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      queuePanelRefresh(document, 80);
+    }
+  });
 
   // ---- Settings UI ----
   function ensureStyles() {
@@ -4870,19 +6273,19 @@
     .wbset-btn svg{width:21px;height:21px;display:block;transition:transform .22s ease}
     .wbset-btn:hover{background:#fff;transform:translateY(-2px);box-shadow:0 12px 32px rgba(0,0,0,.22)}
     .wbset-btn:hover svg{transform:rotate(24deg)}.wbset-btn:active{transform:translateY(0) scale(.96)}
-    .wbset-panel{--wbset-bg:#fff;--wbset-sidebar:#f7f7f8;--wbset-text:#171717;--wbset-muted:#6f6f78;--wbset-border:#e8e8eb;--wbset-hover:#eeeeF1;--wbset-accent:#111;position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.42);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--wbset-text);}
-    .wbset-card{width:min(940px,94vw);height:min(720px,90vh);display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden;background:var(--wbset-bg);color:var(--wbset-text);border:1px solid rgba(0,0,0,.08);border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.28);}
+    .wbset-panel{--wbset-bg:#fff;--wbset-sidebar:#f7f7f8;--wbset-text:#171717;--wbset-muted:#6f6f78;--wbset-border:#e8e8eb;--wbset-hover:#eeeeF1;--wbset-accent:#111;--wbset-radius-lg:10px;--wbset-radius-md:8px;--wbset-radius-sm:6px;position:fixed;inset:0;z-index:999998;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.42);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--wbset-text);}
+    .wbset-card{width:min(940px,94vw);height:min(720px,90vh);display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden;background:var(--wbset-bg);color:var(--wbset-text);border:1px solid rgba(0,0,0,.08);border-radius:var(--wbset-radius-lg);box-shadow:0 24px 70px rgba(0,0,0,.28);}
     .wbset-hdr{min-height:64px;padding:0 20px;border-bottom:1px solid var(--wbset-border);display:flex;align-items:center;justify-content:space-between;}
     .wbset-title{display:flex;align-items:baseline;gap:10px}.wbset-title strong{font-size:16px}.wbset-version{font-size:12px;color:var(--wbset-muted)}
     .wbset-shell{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:0}
     .wbset-nav{padding:14px 10px;background:var(--wbset-sidebar);border-right:1px solid var(--wbset-border);overflow:auto}
-    .wbset-nav button{width:100%;padding:9px 11px;margin:2px 0;border:0;border-radius:8px;background:transparent;color:var(--wbset-muted);font:500 13px/1.3 inherit;text-align:left;cursor:pointer}
+    .wbset-nav button{width:100%;padding:9px 11px;margin:2px 0;border:0;border-radius:var(--wbset-radius-sm);background:transparent;color:var(--wbset-muted);font:500 13px/1.3 inherit;text-align:left;cursor:pointer}
     .wbset-nav button:hover{background:var(--wbset-hover);color:var(--wbset-text)}
     .wbset-nav button.is-active{background:var(--wbset-bg);color:var(--wbset-text);box-shadow:0 0 0 1px var(--wbset-border)}
     .wbset-content{min-width:0;overflow:auto;padding:26px 30px 34px}
     .wbset-page{display:none}.wbset-page.is-active{display:block}
     .wbset-page-head{margin-bottom:22px}.wbset-page-head h3{margin:0 0 5px;font-size:20px;line-height:1.3}.wbset-page-head p{margin:0;color:var(--wbset-muted);font-size:13px}
-    .wbset-sec{padding:0;border:1px solid var(--wbset-border);border-radius:12px;overflow:hidden;margin-bottom:16px;background:var(--wbset-bg)}
+    .wbset-sec{padding:0;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-md);overflow:hidden;margin-bottom:16px;background:var(--wbset-bg)}
     .wbset-sec-title{padding:13px 15px 10px;font-size:13px;font-weight:650;border-bottom:1px solid var(--wbset-border)}
     .wbset-setting{position:relative;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:13px 15px;border-bottom:1px solid var(--wbset-border);cursor:pointer}
     .wbset-setting:last-child{border-bottom:0}.wbset-setting:hover{background:color-mix(in srgb,var(--wbset-sidebar) 58%,transparent)}
@@ -4892,16 +6295,18 @@
     .wbset-switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.16s ease}
     .wbset-setting input:checked + .wbset-switch{background:#202020}.wbset-setting input:checked + .wbset-switch::after{transform:translateX(14px)}
     .wbset-row{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:12px 15px}.wbset-row + .wbset-row{padding-top:0}
-    .wbset-row textarea{width:100%;min-height:68px;box-sizing:border-box;resize:vertical;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:8px;background:var(--wbset-bg);color:var(--wbset-text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
-    .wbset-input{box-sizing:border-box;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:8px;background:var(--wbset-bg);color:var(--wbset-text);font:13px/1.3 inherit;outline:none}.wbset-input:focus,.wbset-row textarea:focus{border-color:#8b8b94;box-shadow:0 0 0 3px rgba(127,127,138,.12)}
+    .wbset-row textarea{width:100%;min-height:68px;box-sizing:border-box;resize:vertical;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-sm);background:var(--wbset-bg);color:var(--wbset-text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
+    .wbset-input{box-sizing:border-box;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-sm);background:var(--wbset-bg);color:var(--wbset-text);font:13px/1.3 inherit;outline:none}.wbset-input:focus,.wbset-row textarea:focus{border-color:#8b8b94;box-shadow:0 0 0 3px rgba(127,127,138,.12)}
     .wbset-note{font-size:12px;line-height:1.5;color:var(--wbset-muted)}
+    .wbset-diagnostics{min-height:190px;white-space:pre;tab-size:2}
+    .wbset-sync-status{min-height:18px}.wbset-sync-status.is-active{color:var(--wbset-text);font-weight:550}
     .wbset-ftr{min-height:64px;padding:0 20px;border-top:1px solid var(--wbset-border);display:flex;gap:9px;align-items:center;justify-content:flex-end}
-    .wbset-btn2{border:1px solid transparent;border-radius:8px;padding:8px 12px;background:var(--wbset-hover);color:var(--wbset-text);font:500 13px/1.2 inherit;cursor:pointer}
+    .wbset-btn2{border:1px solid transparent;border-radius:var(--wbset-radius-sm);padding:8px 12px;background:var(--wbset-hover);color:var(--wbset-text);font:500 13px/1.2 inherit;cursor:pointer}
     .wbset-btn2:hover{filter:brightness(.97)}.wbset-btn2.primary{background:var(--wbset-accent);color:#fff}.wbset-btn2.ghost{border-color:var(--wbset-border);background:transparent}.wbset-btn2.danger{background:#c9362b;color:#fff}.wbset-icon-btn{width:34px;height:34px;padding:0;font-size:18px}
-    .wbset-stats{display:flex;gap:10px;padding:0 0 16px}.wbset-stat{flex:1;padding:13px 15px;border:1px solid var(--wbset-border);border-radius:10px}.wbset-stat span{display:block;font-size:12px;color:var(--wbset-muted)}.wbset-stat strong{display:block;margin-top:4px;font-size:20px}
+    .wbset-stats{display:flex;gap:10px;padding:0 0 16px}.wbset-stat{flex:1;padding:13px 15px;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-md)}.wbset-stat span{display:block;font-size:12px;color:var(--wbset-muted)}.wbset-stat strong{display:block;margin-top:4px;font-size:20px}
     .wbset-manager-tools{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:10px;margin-bottom:12px}.wbset-manager-tools .wbset-input{width:100%}
-    .wbset-uid-list{border:1px solid var(--wbset-border);border-radius:10px;overflow:hidden}.wbset-uid-item{display:grid;grid-template-columns:minmax(140px,1fr) auto auto;gap:10px;align-items:center;min-height:43px;padding:0 10px 0 13px;border-bottom:1px solid var(--wbset-border);font-size:12px}.wbset-uid-item:last-child{border-bottom:0}.wbset-uid-item code{font-size:12px;color:var(--wbset-text)}.wbset-uid-link{color:var(--wbset-muted);text-decoration:none}.wbset-uid-link:hover{color:var(--wbset-text);text-decoration:underline}.wbset-uid-remove{padding:6px 9px;color:#b12e25}
-    .wbset-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;padding-top:13px}.wbset-pagination > span{min-width:110px;text-align:center;font-size:12px;color:var(--wbset-muted)}.wbset-page-jump{display:flex}.wbset-page-jump .wbset-input{width:74px;border-radius:8px 0 0 8px}.wbset-page-jump .wbset-btn2{border-radius:0 8px 8px 0;white-space:nowrap}.wbset-btn2:disabled{opacity:.42;cursor:not-allowed;filter:none}
+    .wbset-uid-list{border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-md);overflow:hidden}.wbset-uid-item{display:grid;grid-template-columns:minmax(140px,1fr) auto auto;gap:10px;align-items:center;min-height:43px;padding:0 10px 0 13px;border-bottom:1px solid var(--wbset-border);font-size:12px}.wbset-uid-item:last-child{border-bottom:0}.wbset-uid-item code{font-size:12px;color:var(--wbset-text)}.wbset-uid-link{color:var(--wbset-muted);text-decoration:none}.wbset-uid-link:hover{color:var(--wbset-text);text-decoration:underline}.wbset-uid-remove{padding:6px 9px;color:#b12e25}
+    .wbset-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;padding-top:13px}.wbset-pagination > span{min-width:110px;text-align:center;font-size:12px;color:var(--wbset-muted)}.wbset-page-jump{display:flex}.wbset-page-jump .wbset-input{width:74px;border-radius:var(--wbset-radius-sm) 0 0 var(--wbset-radius-sm)}.wbset-page-jump .wbset-btn2{border-radius:0 var(--wbset-radius-sm) var(--wbset-radius-sm) 0;white-space:nowrap}.wbset-btn2:disabled{opacity:.42;cursor:not-allowed;filter:none}
     .wbset-empty{padding:34px 18px;text-align:center;color:var(--wbset-muted);font-size:13px}
     .danger-zone{border-color:rgba(201,54,43,.45);background:rgba(201,54,43,.035)}
     @media (prefers-color-scheme:dark){.wbset-btn{border-color:rgba(255,255,255,.12);background:rgba(35,35,35,.94);color:#f1f1f1}.wbset-btn:hover{background:#303030}.wbset-panel{--wbset-bg:#202020;--wbset-sidebar:#181818;--wbset-text:#f1f1f1;--wbset-muted:#aaaab2;--wbset-border:#36363a;--wbset-hover:#303034;--wbset-accent:#f1f1f1}.wbset-btn2.primary{color:#171717}.wbset-setting input:checked + .wbset-switch{background:#ededed}.wbset-switch::after{background:#fff}}
@@ -4932,9 +6337,10 @@
             <nav class="wbset-nav" role="tablist" aria-label="设置分类">
               <button type="button" role="tab" aria-selected="true" class="is-active" data-wbset-page="general">常规</button>
               <button type="button" role="tab" aria-selected="false" data-wbset-page="appearance">外观</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="blacklist">黑名单</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="uids">UID 管理</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="data">数据与同步</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="blacklist">屏蔽设置</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="uids">本地屏蔽列表</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="data">数据管理</button>
+              <button type="button" role="tab" aria-selected="false" data-wbset-page="diagnostics">高级诊断</button>
             </nav>
             <div class="wbset-content">
               <section class="wbset-page is-active" role="tabpanel" data-wbset-section="general">
@@ -4999,23 +6405,27 @@
 
               <section class="wbset-page" role="tabpanel" data-wbset-section="blacklist">
                 <div class="wbset-page-head">
-                  <h3>黑名单</h3>
-                  <p>选择黑名单中的用户需要在哪些页面和内容类型中隐藏。</p>
+                  <h3>屏蔽设置</h3>
+                  <p>选择本地屏蔽列表中的用户需要在哪些页面和内容类型中隐藏。</p>
                 </div>
                 <div class="wbset-sec">
                   <div class="wbset-sec-title">屏蔽范围</div>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>微博和转发</strong><span>隐藏黑名单用户发布或转发的微博。</span></span><input type="checkbox" id="wbset-bl-posts"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>评论和回复</strong><span>隐藏黑名单用户的评论和楼中楼回复。</span></span><input type="checkbox" id="wbset-bl-comments"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>搜索结果</strong><span>隐藏黑名单用户作为主作者的搜索结果。</span></span><input type="checkbox" id="wbset-bl-search"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>微博和转发</strong><span>隐藏本地屏蔽用户发布或转发的微博。</span></span><input type="checkbox" id="wbset-bl-posts"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>评论和回复</strong><span>隐藏本地屏蔽用户的评论和楼中楼回复。</span></span><input type="checkbox" id="wbset-bl-comments"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>搜索结果</strong><span>隐藏本地屏蔽用户作为主作者的搜索结果。</span></span><input type="checkbox" id="wbset-bl-search"><span class="wbset-switch" aria-hidden="true"></span></label>
                   <label class="wbset-setting"><span class="wbset-setting-copy"><strong>用户卡片和推荐项</strong><span>隐藏相关用户和推荐用户卡片。</span></span><input type="checkbox" id="wbset-bl-user-cards"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>转发和点赞用户列表</strong><span>隐藏互动列表里的黑名单用户；关注和粉丝页始终保留。</span></span><input type="checkbox" id="wbset-bl-interactions"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>转发和点赞用户列表</strong><span>隐藏互动列表里的本地屏蔽用户；关注和粉丝页始终保留。</span></span><input type="checkbox" id="wbset-bl-interactions"><span class="wbset-switch" aria-hidden="true"></span></label>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">操作确认</div>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>屏蔽用户前确认</strong><span>通过右键菜单加入本地屏蔽列表或同时加入新浪微博官方黑名单前，在屏幕中央显示确认对话框。</span></span><input type="checkbox" id="wbset-confirm-before-blocking"><span class="wbset-switch" aria-hidden="true"></span></label>
                 </div>
               </section>
 
               <section class="wbset-page" role="tabpanel" data-wbset-section="uids">
                 <div class="wbset-page-head">
-                  <h3>UID 管理</h3>
-                  <p>浏览和搜索所有已保存 UID，并直接添加或删除本地黑名单条目。</p>
+                  <h3>本地屏蔽列表</h3>
+                  <p>浏览和搜索所有已保存 UID，并直接添加或删除本地屏蔽条目。</p>
                 </div>
                 <div class="wbset-stats">
                   <div class="wbset-stat"><span>已保存 UID</span><strong id="wbset-count">0</strong></div>
@@ -5025,7 +6435,7 @@
                   <div class="wbset-sec-title">新增 UID</div>
                   <div class="wbset-row"><textarea id="wbset-uids" rows="3" placeholder="输入一个或多个 UID，支持逗号、空格或换行分隔"></textarea></div>
                   <div class="wbset-row">
-                    <button class="wbset-btn2" id="wbset-bl-add">加入黑名单</button>
+                    <button class="wbset-btn2" id="wbset-bl-add">加入本地屏蔽列表</button>
                     <button class="wbset-btn2 ghost" id="wbset-reload">重载页面</button>
                   </div>
                 </div>
@@ -5043,27 +6453,29 @@
                   </div>
                   <button class="wbset-btn2 ghost" id="wbset-uid-next">下一页</button>
                 </div>
-                <p class="wbset-note">每页显示 ${UID_MANAGER_PAGE_SIZE} 条，按最近写入顺序排列。可输入页数快速跳转；删除后会立即更新本地黑名单和当前页面过滤结果。</p>
+                <p class="wbset-note">每页显示 ${UID_MANAGER_PAGE_SIZE} 条，按最近写入顺序排列。可输入页数快速跳转；删除后会立即更新本地屏蔽列表和当前页面过滤结果。</p>
               </section>
 
               <section class="wbset-page" role="tabpanel" data-wbset-section="data">
                 <div class="wbset-page-head">
-                  <h3>数据与同步</h3>
-                  <p>同步新浪微博官方黑名单，或备份和恢复本地数据。</p>
+                  <h3>数据管理</h3>
+                  <p>同步新浪微博官方黑名单，并管理本地屏蔽列表的备份与恢复。</p>
                 </div>
                 <div class="wbset-sec">
-                  <div class="wbset-sec-title">黑名单同步</div>
+                  <div class="wbset-sec-title">新浪微博官方黑名单同步</div>
                   <div class="wbset-row">
                     <button class="wbset-btn2" id="wbset-sync-delta">增量同步</button>
                     <button class="wbset-btn2 ghost" id="wbset-sync-five">同步前 5 页</button>
                     <button class="wbset-btn2 ghost" id="wbset-sync-full">完整同步</button>
+                    <button class="wbset-btn2 ghost" id="wbset-sync-cancel" hidden>取消同步</button>
                   </div>
-                  <div class="wbset-row wbset-note">增量同步只读取第 1 页；完整同步会遍历全部分页。</div>
+                  <div class="wbset-row wbset-note wbset-sync-status" id="wbset-sync-status" role="status" aria-live="polite">当前没有正在运行的同步任务。</div>
+                  <div class="wbset-row wbset-note">分页请求之间固定等待 ${THROTTLE_MS}ms。增量同步只读取第 1 页；完整同步会遍历全部分页。本地删除会在启动时的自动同步中保留，手动同步会把新浪微博官方黑名单中的 UID 重新加入本地屏蔽列表。</div>
                 </div>
                 <div class="wbset-sec">
-                  <div class="wbset-sec-title">备份与恢复</div>
+                  <div class="wbset-sec-title">本地屏蔽列表备份</div>
                   <div class="wbset-row">
-                    <button class="wbset-btn2" id="wbset-export">导出黑名单</button>
+                    <button class="wbset-btn2" id="wbset-export">导出本地列表</button>
                     <button class="wbset-btn2" id="wbset-import-merge">导入并合并</button>
                     <button class="wbset-btn2 ghost" id="wbset-import-replace">导入并替换</button>
                   </div>
@@ -5072,9 +6484,25 @@
                 <div class="wbset-sec danger-zone">
                   <div class="wbset-sec-title">危险操作</div>
                   <div class="wbset-row">
-                    <button class="wbset-btn2 danger" id="wbset-clear-all">清空本地黑名单</button>
+                    <button class="wbset-btn2 danger" id="wbset-clear-all">清空本地屏蔽列表</button>
                     <span class="wbset-note">此操作不可恢复，请先导出备份。</span>
                   </div>
+                </div>
+              </section>
+
+              <section class="wbset-page" role="tabpanel" data-wbset-section="diagnostics">
+                <div class="wbset-page-head">
+                  <h3>高级诊断</h3>
+                  <p>在功能异常时查看脚本运行状态，便于定位配置、同步和页面过滤问题。</p>
+                </div>
+                <div class="wbset-sec">
+                  <div class="wbset-sec-title">运行诊断</div>
+                  <div class="wbset-row"><textarea class="wbset-diagnostics" id="wbset-diagnostics" readonly aria-label="运行诊断信息"></textarea></div>
+                  <div class="wbset-row">
+                    <button class="wbset-btn2" id="wbset-diagnostics-refresh">刷新诊断</button>
+                    <button class="wbset-btn2 ghost" id="wbset-diagnostics-copy">复制诊断信息</button>
+                  </div>
+                  <div class="wbset-row wbset-note">诊断信息只包含版本、页面类型、数量、运行状态与能力检测，不记录原始路径，不包含 UID 列表，也不会自动上传。</div>
                 </div>
               </section>
             </div>
@@ -5111,10 +6539,14 @@
       const $blacklistInteractions = panel.querySelector(
         '#wbset-bl-interactions'
       );
+      const $confirmBeforeBlocking = panel.querySelector(
+        '#wbset-confirm-before-blocking'
+      );
       const $hideAds = panel.querySelector('#wbset-hide-ads');
       const $showSettingsButton = panel.querySelector(
         '#wbset-show-settings-button'
       );
+      const $diagnostics = panel.querySelector('#wbset-diagnostics');
       const $uids = panel.querySelector('#wbset-uids');
       const $count = panel.querySelector('#wbset-count');
       const $uidMatchCount = panel.querySelector('#wbset-uid-match-count');
@@ -5151,8 +6583,36 @@
           CFG.hideBlacklistUserCards !== false;
         $blacklistInteractions.checked =
           CFG.hideBlacklistInteractions !== false;
+        $confirmBeforeBlocking.checked =
+          CFG.confirmBeforeBlocking !== false;
         $hideAds.checked = CFG.hideAds !== false;
         $showSettingsButton.checked = CFG.showSettingsButton !== false;
+      }
+      function refreshDiagnostics() {
+        const snapshot = WB_INTERNAL.getDiagnostics?.() || {
+          error: '运行诊断暂不可用',
+        };
+        $diagnostics.value = JSON.stringify(snapshot, null, 2);
+        return $diagnostics.value;
+      }
+      async function copyDiagnostics() {
+        const text = refreshDiagnostics();
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            $diagnostics.focus();
+            $diagnostics.select();
+            if (!document.execCommand('copy')) {
+              throw new Error('浏览器拒绝复制');
+            }
+          }
+          notify('✅ 诊断信息已复制', { type: 'success' });
+        } catch (error) {
+          notify(`❌ 复制失败：${error?.message || '未知错误'}`, {
+            type: 'error',
+          });
+        }
       }
       function refreshUIDManager(options = {}) {
         if (options.resetPage) uidManagerPage = 1;
@@ -5187,7 +6647,7 @@
           empty.className = 'wbset-empty';
           empty.textContent = query
             ? `没有找到包含“${query}”的 UID`
-            : '本地黑名单中暂无 UID';
+            : '本地屏蔽列表中暂无 UID';
           $uidList.appendChild(empty);
           return;
         }
@@ -5223,7 +6683,9 @@
           page < 1 ||
           page > uidManagerTotalPages
         ) {
-          alert(`请输入 1 到 ${uidManagerTotalPages} 之间的页数`);
+          notify(`请输入 1 到 ${uidManagerTotalPages} 之间的页数`, {
+            type: 'error',
+          });
           return;
         }
         uidManagerPage = page;
@@ -5246,10 +6708,12 @@
           );
         });
         if (pageName === 'uids') refreshUIDManager();
+        if (pageName === 'diagnostics') refreshDiagnostics();
       }
 
       refreshCfgUI();
       refreshUIDManager();
+      refreshDiagnostics();
 
       const nav = panel.querySelector('.wbset-nav');
       nav.addEventListener('click', (e) => {
@@ -5297,20 +6761,35 @@
         uidManagerPage++;
         refreshUIDManager();
       });
-      $uidList.addEventListener('click', (e) => {
+      $uidList.addEventListener('click', async (e) => {
         const button = e.target.closest('[data-wbset-remove-uid]');
         if (!button) return;
         const uid = button.getAttribute('data-wbset-remove-uid');
         if (!/^\d{5,}$/.test(uid || '')) return;
-        if (!confirm(`确定从本地黑名单删除 UID ${uid} 吗？`)) return;
+        const confirmed = await requestCenteredConfirm({
+          title: '确认删除 UID',
+          message: `确定从本地屏蔽列表删除 UID ${uid} 吗？`,
+          confirmText: '确认删除',
+          cancelText: '取消',
+          danger: true,
+        });
+        if (!confirmed) return;
         removeFromBL([uid]);
         syncRuntimeBL({ restoreHidden: true });
         refreshUIDManager();
       });
       panel.querySelector('#wbset-export').addEventListener('click', () => {
         const count = exportBlacklist();
-        alert(`✅ 已导出 ${count} 个 UID 到 JSON 文件`);
+        notify(`✅ 已导出 ${count} 个 UID 到 JSON 文件`, {
+          type: 'success',
+        });
       });
+      panel
+        .querySelector('#wbset-diagnostics-refresh')
+        .addEventListener('click', refreshDiagnostics);
+      panel
+        .querySelector('#wbset-diagnostics-copy')
+        .addEventListener('click', copyDiagnostics);
 
       // 导入（合并）按钮事件
       const fileInputMerge = createFileInput(async (file) => {
@@ -5318,15 +6797,16 @@
           const result = await importBlacklist(file, 'merge');
           syncRuntimeBL({ restoreHidden: false });
           refreshUIDManager();
-          alert(
+          notify(
             `✅ 导入成功！\n` +
               `📂 文件导出时间：${result.exportTime}\n` +
               `📊 文件中 UID 数：${result.importedCount}\n` +
               `➕ 新增 UID 数：${result.addedCount}\n` +
-              `📋 当前总数：${result.totalCount}`
+              `📋 当前总数：${result.totalCount}`,
+            { type: 'success', duration: 6000 }
           );
         } catch (err) {
-          alert(`❌ ${err.message}`);
+          notify(`❌ ${err.message}`, { type: 'error' });
         }
       });
       panel
@@ -5337,25 +6817,29 @@
 
       // 导入（替换）按钮事件
       const fileInputReplace = createFileInput(async (file) => {
-        const confirmReplace = confirm(
-          '⚠️ 警告：替换模式将清空现有黑名单！\n\n' +
-            '确定要用文件内容完全替换当前黑名单吗？\n' +
-            '（建议先导出备份）'
-        );
+        const confirmReplace = await requestCenteredConfirm({
+          title: '确认替换本地屏蔽列表',
+          message:
+            '替换模式会删除备份文件中不存在的现有 UID。\n\n建议先导出当前本地屏蔽列表备份。',
+          confirmText: '确认替换',
+          cancelText: '取消',
+          danger: true,
+        });
         if (!confirmReplace) return;
 
         try {
           const result = await importBlacklist(file, 'replace');
           syncRuntimeBL({ restoreHidden: true });
           refreshUIDManager({ resetPage: true });
-          alert(
+          notify(
               `✅ 替换成功！\n` +
               `📂 文件导出时间：${result.exportTime}\n` +
               `📊 导入 UID 数：${result.importedCount}\n` +
-              `📋 当前总数：${result.totalCount}`
+              `📋 当前总数：${result.totalCount}`,
+            { type: 'success', duration: 6000 }
           );
         } catch (err) {
-          alert(`❌ ${err.message}`);
+          notify(`❌ ${err.message}`, { type: 'error' });
         }
       });
       panel
@@ -5364,74 +6848,160 @@
           fileInputReplace.click();
         });
 
-      // 同步按钮事件
-      panel.querySelector('#wbset-sync-delta').addEventListener('click', async () => {
-        try {
-          const result = await window.WB_BL_SYNC.deltaSync();
-          alert(`✅ 增量同步完成！新增 ${result.added} 个 UID`);
-          refreshUIDManager();
-        } catch (err) {
-          alert(`❌ 同步失败：${err.message}`);
-        }
-      });
+      // 同步按钮事件：所有入口共享同一个互斥任务，并支持进度与取消。
+      const syncAPI = WB_INTERNAL.blSync;
+      const syncStartButtons = [
+        panel.querySelector('#wbset-sync-delta'),
+        panel.querySelector('#wbset-sync-five'),
+        panel.querySelector('#wbset-sync-full'),
+      ];
+      const syncCancelButton = panel.querySelector('#wbset-sync-cancel');
+      const syncStatus = panel.querySelector('#wbset-sync-status');
 
-      panel.querySelector('#wbset-sync-five').addEventListener('click', async () => {
-        try {
-          const result = await window.WB_BL_SYNC.syncPages(5);
-          alert(`✅ 同步前5页完成！新增 ${result.added} 个 UID`);
-          refreshUIDManager();
-        } catch (err) {
-          alert(`❌ 同步失败：${err.message}`);
-        }
-      });
-
-      panel.querySelector('#wbset-sync-full').addEventListener('click', async () => {
-        try {
-          const oldSize = window.WB_BL_SYNC.getCount();
-          const newSize = await window.WB_BL_SYNC.fullSync();
-          alert(`✅ 完整同步完成！新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`);
-          refreshUIDManager();
-        } catch (err) {
-          alert(`❌ 同步失败：${err.message}`);
-        }
-      });
-
-      panel.querySelector('#wbset-clear-all').addEventListener('click', () => {
-        const currentCount = readBLSet().size;
-        if (currentCount === 0) {
-          alert('黑名单已经是空的');
+      const renderSyncState = (state) => {
+        const active = state?.active === true;
+        syncStartButtons.forEach((button) => {
+          button.disabled = active;
+        });
+        syncCancelButton.hidden = !active;
+        syncCancelButton.disabled = !active;
+        syncStatus.classList.toggle('is-active', active);
+        if (!active) {
+          syncStatus.textContent = '当前没有正在运行的同步任务。';
           return;
         }
-        const confirmClear = confirm(
-          `⚠️ 警告：此操作不可恢复！\n\n` +
-            `确定要清空所有 ${currentCount} 个黑名单 UID 吗？\n` +
-            `（强烈建议先点击"导出黑名单"备份）`
-        );
-        if (!confirmClear) return;
+        const pageText = state.currentPage
+          ? `第 ${state.currentPage}${
+              state.targetPages ? ` / ${state.targetPages}` : ''
+            } 页`
+          : '正在准备';
+        const loadedText = Number.isFinite(state.loaded)
+          ? `，已处理 ${state.loaded} 个 UID`
+          : '';
+        const waitingText = state.waiting ? '，请求过于频繁，正在等待重试' : '';
+        syncStatus.textContent = `${state.label}：${pageText}${loadedText}${waitingText}`;
+      };
 
-        const doubleConfirm = confirm(
-          `🔴 最后确认：真的要清空吗？\n\n` +
-            `这将删除 ${currentCount} 个 UID，无法恢复！`
-        );
-        if (!doubleConfirm) return;
+      const reportSyncError = (err) => {
+        if (err?.name === 'AbortError') {
+          notify('新浪微博官方黑名单同步已取消');
+          return;
+        }
+        notify(`❌ 新浪微博官方黑名单同步失败：${err?.message || '未知错误'}`, {
+          type: 'error',
+        });
+      };
 
-        writeBLSet(new Set());
-        syncRuntimeBL({ restoreHidden: true });
-        refreshUIDManager({ resetPage: true });
-        alert('✅ 已清空黑名单');
+      syncAPI.subscribe(renderSyncState);
+      syncCancelButton.addEventListener('click', () => syncAPI.cancel());
+
+      syncStartButtons[0].addEventListener('click', async () => {
+        try {
+          const result = await syncAPI.deltaSync();
+          notify(`✅ 官方黑名单增量同步完成！本地屏蔽列表新增 ${result.added} 个 UID`, {
+            type: 'success',
+          });
+          refreshUIDManager();
+        } catch (err) {
+          reportSyncError(err);
+        }
       });
+
+      syncStartButtons[1].addEventListener('click', async () => {
+        try {
+          const result = await syncAPI.syncPages(5);
+          notify(`✅ 官方黑名单前 5 页同步完成！本地屏蔽列表新增 ${result.added} 个 UID`, {
+            type: 'success',
+          });
+          refreshUIDManager();
+        } catch (err) {
+          reportSyncError(err);
+        }
+      });
+
+      syncStartButtons[2].addEventListener('click', async () => {
+        try {
+          const oldSize = syncAPI.getCount();
+          const newSize = await syncAPI.fullSync();
+          notify(
+            `✅ 官方黑名单完整同步完成！本地屏蔽列表新增 ${newSize - oldSize} 个 UID（共 ${newSize}）`,
+            { type: 'success' }
+          );
+          refreshUIDManager();
+        } catch (err) {
+          reportSyncError(err);
+        }
+      });
+
+      panel
+        .querySelector('#wbset-clear-all')
+        .addEventListener('click', async () => {
+          const currentCount = readBLSet().size;
+          if (currentCount === 0) {
+            notify('本地屏蔽列表已经是空的');
+            return;
+          }
+          const confirmClear = await requestCenteredConfirm({
+            title: '确认清空本地屏蔽列表',
+            message:
+              `即将删除本地屏蔽列表中的 ${currentCount} 个 UID。\n\n` +
+              '此操作不可恢复，建议先导出备份。',
+            confirmText: '继续',
+            cancelText: '取消',
+            danger: true,
+          });
+          if (!confirmClear) return;
+
+          const doubleConfirm = await requestCenteredConfirm({
+            title: '最后确认',
+            message: `确定删除全部 ${currentCount} 个 UID 吗？删除后无法恢复。`,
+            confirmText: '全部删除',
+            cancelText: '取消',
+            danger: true,
+          });
+          if (!doubleConfirm) return;
+
+          removeFromBL(Array.from(readBLSet()));
+          syncRuntimeBL({ restoreHidden: true });
+          refreshUIDManager({ resetPage: true });
+          notify('✅ 已清空本地屏蔽列表', { type: 'success' });
+        });
 
       panel.querySelector('#wbset-bl-add').addEventListener('click', () => {
         const ids = parseUIDInput($uids.value);
-        if (!ids.length) return alert('请输入有效的 UID');
+        if (!ids.length) {
+          notify('请输入有效的 UID', { type: 'error' });
+          return;
+        }
         const result = addToBL(ids);
         syncRuntimeBL({ restoreHidden: false });
         $uids.value = '';
         refreshUIDManager({ resetPage: true });
-        alert(
-          `已处理 ${ids.length} 个 UID，新增 ${result.added} 个，当前缓存总数：${result.size}`
+        notify(
+          `已处理 ${ids.length} 个 UID，新增 ${result.added} 个，当前缓存总数：${result.size}`,
+          { type: 'success' }
         );
       });
+
+      function openNativeHomeTimeline() {
+        const allFollowingTab = document.querySelector(
+          '[role="link"][title="全部关注"]'
+        );
+        if (allFollowingTab instanceof HTMLElement) {
+          allFollowingTab.click();
+          WB_INTERNAL.dom.schedule(
+            'settings-native-home-fallback',
+            () => {
+              if (/^\/mygroups(?:\/|$)/.test(location.pathname)) {
+                location.assign(`${location.origin}/`);
+              }
+            },
+            800
+          );
+          return;
+        }
+        location.assign(`${location.origin}/`);
+      }
 
       panel.querySelector('#wbset-save').addEventListener('click', () => {
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
@@ -5452,12 +7022,14 @@
         CFG.hideBlacklistSearchResults = $blacklistSearch.checked;
         CFG.hideBlacklistUserCards = $blacklistUserCards.checked;
         CFG.hideBlacklistInteractions = $blacklistInteractions.checked;
+        CFG.confirmBeforeBlocking = $confirmBeforeBlocking.checked;
         CFG.hideAds = $hideAds.checked;
         CFG.showSettingsButton = $showSettingsButton.checked;
-        delete CFG.hideNavVideoRecommend;
         saveCfg(CFG);
-        // 同步更新 defaultLatest 到油猴菜单使用的存储
-        GM_setValue('defaultLatest', nextLatestTimeline);
+        WB_INTERNAL.applyConfig?.(CFG);
+        applyPanelSettingsNow();
+        syncLauncherButton();
+        closePanel({ reset: false });
         const isMainWeiboHost = ['weibo.com', 'www.weibo.com'].includes(
           location.hostname
         );
@@ -5472,11 +7044,14 @@
           isMainWeiboHost &&
           isHomeTimelineRoute
         ) {
+          if (!nextLatestTimeline) {
+            openNativeHomeTimeline();
+            return;
+          }
           location.assign(`${location.origin}/`);
           return;
         }
-        // 刷新页面以确保布局正确更新
-        location.reload();
+        notify('设置已保存并即时生效', { type: 'success' });
       });
       panel.querySelector('#wbset-cancel').addEventListener('click', () => {
         closePanel();
@@ -5496,18 +7071,18 @@
         CFG = loadCfg();
         refreshCfgUI();
         refreshUIDManager();
+        refreshDiagnostics();
       });
     }
     panel.style.display = 'flex';
     panel.dispatchEvent(new CustomEvent('wbset:open'));
   }
 
-  function initLauncher() {
-    ensureStyles();
+  function syncLauncherButton() {
     const existingButton = document.querySelector('.wbset-btn');
     if (CFG.showSettingsButton === false) {
       existingButton?.remove();
-    } else if (!existingButton) {
+    } else if (!existingButton && document.documentElement) {
       const btn = document.createElement('button');
       btn.className = 'wbset-btn';
       btn.type = 'button';
@@ -5522,9 +7097,30 @@
       btn.addEventListener('click', openPanel);
       document.documentElement.appendChild(btn);
     }
+  }
+
+  function initLauncher() {
+    ensureStyles();
+    syncLauncherButton();
     if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('打开脚本设置', openPanel);
     }
+  }
+
+  if (typeof GM_addValueChangeListener === 'function') {
+    GM_addValueChangeListener(
+      WB_INTERNAL.config.key,
+      (_name, _oldValue, _newValue, remote) => {
+        if (!remote) return;
+        CFG = loadCfg();
+        applyPanelSettingsNow();
+        syncLauncherButton();
+        const panel = document.querySelector('.wbset-panel');
+        if (panel?.style.display !== 'none') {
+          panel.dispatchEvent(new CustomEvent('wbset:open'));
+        }
+      }
+    );
   }
 
   if (document.readyState === 'loading')
@@ -5532,3 +7128,4 @@
   else initLauncher();
 })();
 /* === /Settings v5 === */
+})();
