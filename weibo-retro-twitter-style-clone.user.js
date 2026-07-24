@@ -7026,10 +7026,16 @@
         CFG.hideAds = $hideAds.checked;
         CFG.showSettingsButton = $showSettingsButton.checked;
         saveCfg(CFG);
-        WB_INTERNAL.applyConfig?.(CFG);
-        applyPanelSettingsNow();
-        syncLauncherButton();
         closePanel({ reset: false });
+        let runtimeApplyError = null;
+        try {
+          WB_INTERNAL.applyConfig?.(CFG);
+          applyPanelSettingsNow();
+          syncLauncherButton();
+        } catch (error) {
+          runtimeApplyError = error;
+          console.warn('[WB-SETTINGS] 设置已保存，但即时应用失败', error);
+        }
         const isMainWeiboHost = ['weibo.com', 'www.weibo.com'].includes(
           location.hostname
         );
@@ -7051,7 +7057,13 @@
           location.assign(`${location.origin}/`);
           return;
         }
-        notify('设置已保存并即时生效', { type: 'success' });
+        if (runtimeApplyError) {
+          notify('设置已保存；部分设置将在刷新页面后生效', {
+            type: 'error',
+          });
+        } else {
+          notify('设置已保存并即时生效', { type: 'success' });
+        }
       });
       panel.querySelector('#wbset-cancel').addEventListener('click', () => {
         closePanel();
