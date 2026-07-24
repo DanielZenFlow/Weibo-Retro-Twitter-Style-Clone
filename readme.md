@@ -8,9 +8,9 @@
 
 ### 项目简介
 
-Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampermonkey 脚本。脚本维护一套本地屏蔽规则，用于过滤指定用户、清理推荐模块、隐藏热搜容器，并提供官方黑名单导入与同步能力。
+Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampermonkey 脚本。脚本使用本地 UID 黑名单过滤指定用户，并提供时间线切换、推荐模块清理、热搜隐藏、广告过滤和新浪微博官方黑名单同步功能。
 
-本地屏蔽规则是插件的主要过滤依据。当前版本支持直接用鼠标右键屏蔽用户；考虑到新浪微博官方黑名单数量有限，日常使用可优先将用户加入本地屏蔽规则；需要同步到新浪微博账号级黑名单时，可使用右键菜单中的“同时加入新浪微博黑名单”功能，或从设置面板同步官方黑名单。
+右键菜单支持仅加入本地黑名单，以及同时加入本地黑名单和新浪微博官方黑名单。设置面板支持浏览、搜索、新增、删除、导入、导出和同步本地 UID 数据。
 
 ---
 
@@ -18,14 +18,19 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 
 | 功能 | 说明 |
 | --- | --- |
-| 时间线恢复 | 可将微博首页默认切换到“最新微博”，按时间顺序浏览内容。 |
+| 时间线恢复 | 可将微博首页默认切换到“最新微博”，按时间顺序浏览内容；关闭后恢复微博原生首页与“全部关注”接口行为。 |
 | 本地屏蔽规则 | 使用本地 UID 列表过滤用户内容，不依赖新浪微博官方黑名单容量。 |
 | 官方黑名单导入 | 支持增量同步、同步前五页、完整同步，将新浪微博官方黑名单导入本地屏蔽规则。 |
 | 原生拉黑同步 | 在网页中使用新浪微博原生拉黑功能后，脚本会在请求成功后自动把该 UID 加入本地屏蔽规则。 |
-| 右键屏蔽菜单 | 在用户名称或用户链接上使用鼠标右键，可直接屏蔽该用户、同时加入新浪微博黑名单，或在新选项卡打开用户主页。 |
+| 右键屏蔽菜单 | 仅在用户名文字区域使用鼠标右键，可直接屏蔽该用户、同时加入新浪微博黑名单，或在新选项卡打开用户主页。 |
 | 多层过滤 | 通过 Fetch、XHR、WebSocket 和 DOM 监听过滤内容，覆盖动态加载的信息流和搜索结果。 |
-| 搜索页支持 | 支持 `s.weibo.com` 搜索页，过滤本地规则命中的搜索结果，并移除搜索页热搜容器。 |
+| 可配置内容过滤 | 可分别控制黑名单用户的微博/转发、评论/回复、搜索结果、用户卡片，以及转发/点赞列表。 |
+| 搜索页支持 | 支持 `s.weibo.com` 搜索页，过滤本地规则命中的搜索结果，并可隐藏热搜和「相关用户」容器。 |
+| 广告过滤 | 可隐藏接口或页面中带有明确广告、推广、赞助标识的内容。 |
 | 导航与侧栏清理 | 可分别隐藏“视频”“推荐”“游戏”入口，并隐藏微博热搜、你可能感兴趣的人等模块。 |
+| 新微博提示 | 首页存在新微博时，顶部首页按钮以红色圆点代替红色 `NEW` 文字徽标。 |
+| 标准设置面板 | 设置按“常规、外观、黑名单、UID 管理、数据与同步”分类，并支持隐藏右下角齿轮按钮。 |
+| UID 管理 | 直接浏览全部已保存 UID，支持搜索、输入页数快速跳转、每页 50 条分页显示、批量新增、单条删除和打开用户主页。 |
 | 数据备份 | 支持导出、合并导入、替换导入本地屏蔽规则。 |
 
 ---
@@ -35,7 +40,7 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展。
 2. 安装或复制 `weibo-retro-twitter-style-clone.user.js` 到 Tampermonkey。
 3. 刷新微博网页版页面。
-4. 打开脚本设置面板，根据需要同步官方黑名单或手动管理本地屏蔽规则。
+4. 点击右下角齿轮按钮，或使用 Tampermonkey 菜单中的“打开脚本设置”。设置面板包含外观、UID 管理、官方黑名单同步和本地数据管理功能。
 
 脚本匹配以下页面：
 
@@ -51,9 +56,12 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 
 - 本地屏蔽规则保存在 Tampermonkey 本地存储中。
 - 本地屏蔽规则可通过手动输入 UID、右键菜单、导入备份、同步官方黑名单等方式更新。
-- 新浪微博官方黑名单可作为导入来源，但不是脚本过滤的唯一来源。
-- 当需要减少官方黑名单占用时，可只使用本地屏蔽规则。
-- 当需要账号级屏蔽时，可选择“屏蔽（同时加入新浪微博黑名单）”。
+- 页面内容过滤使用本地黑名单；新浪微博官方黑名单是本地黑名单的同步来源之一。
+- 右键菜单中的“屏蔽 @用户”只写入本地黑名单。
+- 右键菜单中的“屏蔽 @用户（同时加入新浪微博黑名单）”同时写入本地黑名单和新浪微博官方黑名单。
+- 设置面板可分别决定在哪些内容类型中隐藏黑名单用户；关注和粉丝关系页始终保留显示。
+- “UID 管理”页面读取本地黑名单中的完整 UID 列表。
+- UID 列表按最近写入顺序排列，每页显示 50 条；分页栏支持输入页数快速跳转。搜索、添加和删除操作均直接作用于本地黑名单。
 
 ---
 
@@ -61,17 +69,17 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 
 | 选项 | 说明 |
 | --- | --- |
-| 增量同步 | 同步官方黑名单第一页，适合日常更新。 |
-| 同步前五页 | 同步官方黑名单前五页，适合近期有较多拉黑操作的情况。 |
-| 完整同步 | 遍历官方黑名单全部分页，适合新设备、首次迁移或大规模变动。 |
+| 增量同步 | 读取并合并官方黑名单第 1 页。 |
+| 同步前五页 | 读取并合并官方黑名单前 5 页。 |
+| 完整同步 | 遍历并合并官方黑名单全部分页。 |
 
-同步官方黑名单需要在 `weibo.com` 主站页面执行。搜索页 `s.weibo.com` 使用本地缓存规则过滤内容，不执行官方黑名单同步。
+官方黑名单同步仅在 `weibo.com` 主站页面执行。搜索页 `s.weibo.com` 使用本地缓存规则过滤内容，不执行官方黑名单同步。
 
 ---
 
 ### 右键菜单
 
-在可识别 UID 的用户名称、用户链接或用户卡片上点击鼠标右键，会显示脚本菜单，可直接完成用户屏蔽：
+仅在可识别 UID 的用户名文字区域点击鼠标右键，会显示脚本菜单；在头像、正文、按钮或卡片空白处右键时不会接管浏览器菜单：
 
 - `屏蔽 @用户`：加入本地屏蔽规则并立即隐藏当前卡片。
 - `屏蔽 @用户（同时加入新浪微博黑名单）`：加入本地屏蔽规则，并调用新浪微博官方黑名单接口。
@@ -81,10 +89,10 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 
 ### 使用说明
 
-- 官方黑名单同步请求使用 300ms 间隔，降低触发微博反爬限制的概率。
-- 本地屏蔽规则不需要每次重新下载。
-- 大量本地屏蔽规则会增加 CSS 与 DOM 扫描工作量。
-- 微博页面结构变化时，部分选择器可能需要更新。
+- 官方黑名单分页同步请求的间隔为 300ms。
+- 本地屏蔽规则从 Tampermonkey 本地存储读取。
+- CSS 与 DOM 扫描工作量随本地 UID 数量增加。
+- DOM 内容过滤依赖微博网页版的页面结构和选择器。
 - 仅支持微博网页版桌面端。
 
 ---
@@ -99,9 +107,9 @@ Weibo Retro Twitter-Style Clone 是一个面向微博网页版桌面端的 Tampe
 
 ### Overview
 
-Weibo Retro Twitter-Style Clone is a Tampermonkey userscript for the desktop Weibo website. It maintains a local blocking rule set for filtering selected users, cleaning recommendation modules, removing hot-search containers, and importing or syncing users from the official Weibo blacklist.
+Weibo Retro Twitter-Style Clone is a Tampermonkey userscript for the desktop Weibo website. It uses a local UID blacklist to filter selected users and provides timeline control, recommendation cleanup, hot-search removal, ad filtering, and official Weibo blacklist synchronization.
 
-The local blocking rule set is the primary filtering layer. The current version supports direct user blocking from the mouse right-click menu. Because the official Weibo blacklist has a limited capacity, daily filtering can rely on local rules first. When account-level blocking is required, the right-click menu can also add the user to the official Weibo blacklist.
+The right-click menu supports local-only blocking and combined local plus official Weibo blocking. The settings panel supports browsing, searching, adding, deleting, importing, exporting, and synchronizing local UID data.
 
 ---
 
@@ -113,10 +121,15 @@ The local blocking rule set is the primary filtering layer. The current version 
 | Local Blocking Rules | Filters users through a local UID list without depending on the official blacklist capacity. |
 | Official Blacklist Import | Supports delta sync, first-five-pages sync, and full sync from the official Weibo blacklist into local rules. |
 | Native Block Sync | When a user is blocked through Weibo's native UI, the script adds the UID to local rules after the request succeeds. |
-| Right-Click Blocking | Use the mouse right-click menu on a user name or profile link to block the user directly, block locally plus officially, or open the profile in a new tab. |
+| Right-Click Blocking | Right-click only on user-name text to block the user directly, block locally plus officially, or open the profile in a new tab. |
 | Multi-Layer Filtering | Filters through Fetch, XHR, WebSocket, and DOM observers for dynamically loaded feeds and search results. |
-| Search Page Support | Supports `s.weibo.com`, filters matching search result cards, and removes search hot-search containers. |
+| Configurable Blacklist Filtering | Independently controls posts/reposts, comments/replies, search results, user cards, and repost/like user lists. |
+| Search Page Support | Supports `s.weibo.com`, filters matching search result cards, and can hide hot-search and related-user containers. |
+| Ad Filtering | Hides content with explicit API or DOM advertising, promoted, or sponsored markers. |
 | Navigation and Sidebar Cleanup | Separately hides the "Video", "Recommended", and "Game" navigation entries, plus hot-search and suggested-people modules. |
+| New Post Indicator | Replaces the red `NEW` text badge on the Home button with a red dot when new posts are available. |
+| Standard Settings UI | Organizes settings into General, Appearance, Blacklist, UID Management, and Data & Sync pages, with an option to hide the floating gear button. |
+| UID Management | Browses the complete saved UID list with search, direct page-number jumps, 50-item pagination, batch addition, single-item deletion, and profile links. |
 | Backup and Restore | Supports exporting, merge importing, and replacement importing local blocking rules. |
 
 ---
@@ -126,7 +139,7 @@ The local blocking rule set is the primary filtering layer. The current version 
 1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 2. Install `weibo-retro-twitter-style-clone.user.js`, or copy its contents into a new Tampermonkey script.
 3. Refresh open Weibo desktop pages.
-4. Open the script settings panel to sync the official blacklist or manage local blocking rules.
+4. Open settings from the bottom-right gear button or Tampermonkey's "Open script settings" command. The panel contains appearance controls, UID management, official blacklist synchronization, and local data management.
 
 The script runs on:
 
@@ -142,9 +155,12 @@ The script runs on:
 
 - Local blocking rules are stored in Tampermonkey local storage.
 - Local rules can be updated by manual UID entry, right-click actions, backup import, or official blacklist sync.
-- The official Weibo blacklist can be used as an import source, but it is not the only filtering source.
-- Local-only blocking can be used when official blacklist capacity should be preserved.
-- Account-level blocking is available through the "block and also add to official Weibo blacklist" right-click action.
+- Page filtering uses the local blacklist. The official Weibo blacklist is one synchronization source for the local blacklist.
+- `Block @user` writes only to the local blacklist.
+- `Block @user (also add to official Weibo blacklist)` writes to both the local and official Weibo blacklists.
+- Content categories can be enabled independently; follower/following relationship pages always remain visible.
+- The UID Management page reads the complete UID list from the local blacklist.
+- UIDs are shown in recent-write order with 50 entries per page. The pagination controls accept a page number for direct navigation. Search, addition, and deletion operate directly on the local blacklist.
 
 ---
 
@@ -152,17 +168,17 @@ The script runs on:
 
 | Option | Description |
 | --- | --- |
-| Delta Sync | Syncs the first official blacklist page for daily updates. |
-| Sync First Five Pages | Syncs the first five official blacklist pages for recent blocking activity. |
-| Full Sync | Traverses all official blacklist pages for new devices, migrations, or large changes. |
+| Delta Sync | Reads and merges the first official blacklist page. |
+| Sync First Five Pages | Reads and merges the first five official blacklist pages. |
+| Full Sync | Traverses and merges all official blacklist pages. |
 
-Official blacklist sync should be run on the main `weibo.com` domain. Search pages on `s.weibo.com` use cached local rules and do not run official blacklist sync.
+Official blacklist sync runs only on the main `weibo.com` domain. Search pages on `s.weibo.com` use cached local rules and do not run official blacklist sync.
 
 ---
 
 ### Right-Click Menu
 
-Right-clicking a user name, profile link, or user card with a detectable UID opens the script menu and supports direct user blocking:
+Right-clicking detectable user-name text opens the script menu. Right-clicks on avatars, post bodies, controls, and empty card areas keep the browser's native menu:
 
 - `Block @user`: adds the UID to local blocking rules and hides the current card immediately.
 - `Block @user (also add to official Weibo blacklist)`: adds the UID locally and calls the official Weibo blacklist API.
@@ -172,10 +188,10 @@ Right-clicking a user name, profile link, or user card with a detectable UID ope
 
 ### Notes
 
-- Official blacklist sync requests use a 300ms interval to reduce the chance of triggering Weibo anti-abuse limits.
-- Local blocking rules do not need to be downloaded on every page load.
-- Very large local rule sets may increase CSS and DOM scanning work.
-- Weibo DOM changes may require selector updates.
+- Official blacklist pagination requests use a 300ms interval.
+- Local blocking rules are read from Tampermonkey local storage.
+- CSS and DOM scanning workload grows with the number of local UIDs.
+- DOM content filtering depends on the desktop Weibo page structure and selectors.
 - Desktop Weibo web pages are supported.
 
 ---
