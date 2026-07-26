@@ -35,7 +35,7 @@
 3. 在用户脚本管理器中确认安装。
 4. 打开或刷新微博桌面端网页，按照首次设置向导完成配置。
 
-项目地址：<https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C>
+项目地址：[Greasy Fork 项目页](https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C)
 
 ## 使用
 
@@ -94,8 +94,6 @@
 - [通过 Buy Me a Coffee 支持 DanielZenFlow](https://buymeacoffee.com/danielzenflow)
 - [提交问题或功能建议](https://github.com/DanielZenFlow/Pynseq-Weibo/issues)
 
-Buy Me a Coffee：<https://buymeacoffee.com/danielzenflow>
-
 ## 许可证
 
 本项目采用 [MIT License](https://opensource.org/license/mit/)。
@@ -139,7 +137,7 @@ The project does not support the Weibo mobile application.
 3. Confirm the installation in the userscript manager.
 4. Open or refresh the desktop Weibo website and complete the onboarding flow.
 
-Project page: <https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C>
+Project page: [Pynseq for Weibo on Greasy Fork](https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C)
 
 ## Usage
 
@@ -191,8 +189,6 @@ Export the blocklist under “Settings → Local Blocklist”. The exported JSON
 - [Star Pynseq for Weibo on GitHub](https://github.com/DanielZenFlow/Pynseq-Weibo)
 - [Support DanielZenFlow on Buy Me a Coffee](https://buymeacoffee.com/danielzenflow)
 - [Report a bug or request a feature](https://github.com/DanielZenFlow/Pynseq-Weibo/issues)
-
-Buy Me a Coffee: <https://buymeacoffee.com/danielzenflow>
 
 ## License
 

@@ -52,6 +52,27 @@ assert.match(readmeSource, /^# Pynseq for Weibo｜屏序·微博$/m);
 assert.match(readmeSource, /^> 屏其不欲见者，复其应有之序。$/m);
 assert.equal(readmeSource.includes(greasyForkURL), true);
 assert.match(readmeSource, /https:\/\/buymeacoffee\.com\/danielzenflow/);
+assert.equal(
+  (
+    readmeSource.match(
+      /https:\/\/buymeacoffee\.com\/danielzenflow/g
+    ) || []
+  ).length,
+  2
+);
+assert.equal(
+  readmeSource.includes(
+    `项目地址：[Greasy Fork 项目页](${greasyForkURL})`
+  ),
+  true
+);
+assert.equal(
+  readmeSource.includes(
+    `Project page: [Pynseq for Weibo on Greasy Fork](${greasyForkURL})`
+  ),
+  true
+);
+assert.doesNotMatch(readmeSource, /(?:项目地址|Project page):\s*<https:/);
 assert.match(source, /#wb-retro-toast\s*\{[\s\S]*?z-index:\s*2147483647/);
 assert.match(source, /width:\s*min\(215px,\s*calc\(100vw - 32px\)\)/);
 assert.match(source, /#wb-retro-toast\.is-visible\s*\{\s*opacity:\s*1/);
@@ -165,8 +186,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.0\.5/);
-assert.match(source, /const SCRIPT_VERSION = '2\.0\.5'/);
+assert.match(source, /@version\s+2\.1\.0/);
+assert.match(source, /const SCRIPT_VERSION = '2\.1\.0'/);
 assert.match(source, /const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博'/);
 assert.match(settingsSource, /<span class="wbset-version">v\$\{SCRIPT_VERSION\}<\/span>/);
 assert.doesNotMatch(source, /本地黑名单/);
@@ -242,6 +263,165 @@ const immediateBlockSource = sourceBetween(
 assert.match(immediateBlockSource, /hideContentRoot\(post, ctx\.uid\)/);
 assert.match(immediateBlockSource, /compactVirtualScrollerGaps\(document\)/);
 assert.match(immediateBlockSource, /nudgeTimelineLayout\(\)/);
+const hideShellSource = sourceBetween(
+  '  function findHideShell(',
+  '  function setImportantStyleIfNeeded('
+);
+assert.match(hideShellSource, /virtualView\.firstElementChild/);
+assert.match(
+  hideShellSource,
+  /target\.parentElement !== virtualView/
+);
+assert.doesNotMatch(hideShellSource, /return virtualView;/);
+const virtualGapSource = sourceBetween(
+  '  function compactVirtualScrollerGaps(',
+  '  function isWeiboSearchResultPage('
+);
+assert.match(virtualGapSource, /clearVirtualCompactionState\(cleanupRoot\)/);
+assert.doesNotMatch(
+  virtualGapSource,
+  /applyVirtual(?:Item|Wrapper)Compaction/
+);
+assert.equal(
+  source.includes('      [${COMPACTED_VIRTUAL_ITEM_ATTR}] {'),
+  false,
+  'runtime CSS must not override Vue recycler transforms'
+);
+assert.equal(
+  source.includes('      [${COMPACTED_VIRTUAL_WRAPPER_ATTR}] {'),
+  false,
+  'runtime CSS must not override Vue recycler height'
+);
+assert.match(
+  source,
+  /\.vue-recycle-scroller__item-view > \$\{BLOCKED_CONTENT_HIDE_SELECTOR\}[\s\S]*?height:\s*1px !important;[\s\S]*?visibility:\s*hidden !important;/
+);
+assert.match(
+  source,
+  /\.vue-recycle-scroller\[\$\{NATIVE_PAGINATION_GUARD_ATTR\}="1"\][\s\S]*?margin-top:\s*\$\{NATIVE_PAGINATION_GUARD_PX\}px !important;/
+);
+assert.match(source, /const NATIVE_PAGINATION_GUARD_PX = 192;/);
+assert.doesNotMatch(
+  source,
+  /\[class\*="vue-recycle-scroller__item-view"\]\s*\{[\s\S]*?(?:transform|min-height):/
+);
+assert.match(
+  sourceBetween(
+    '  function hideContentRoot(',
+    '  let floatingVideoSuppressUntil ='
+  ),
+  /prepareNativeTimelinePaginationGuard\(target\)[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
+);
+const paginationGuardSource = sourceBetween(
+  '  function getNativeTimelinePaginationParts(',
+  '  function compactVirtualScrollerGaps('
+);
+assert.match(
+  paginationGuardSource,
+  /scroller\.setAttribute\(NATIVE_PAGINATION_GUARD_ATTR, '1'\)/
+);
+assert.match(
+  paginationGuardSource,
+  /scroller\.removeAttribute\(NATIVE_PAGINATION_GUARD_ATTR\)/
+);
+assert.match(
+  paginationGuardSource,
+  /viewport \+ viewRect\.height \+ NATIVE_PAGINATION_GUARD_PX/
+);
+assert.doesNotMatch(
+  paginationGuardSource,
+  /(?:transform|min-height|scrollTo|scrollBy)\s*[=:]/
+);
+assert.match(
+  virtualGapSource,
+  /updateNativeTimelinePaginationGuards\(cleanupRoot\)/
+);
+assert.match(
+  sourceBetween(
+    '  function restoreHiddenRelationshipItems(',
+    '  function clearOwnBlockedContentHideState('
+  ),
+  /removeAttribute\(NATIVE_PAGINATION_GUARD_ATTR\)/
+);
+class FakeHideElement {
+  constructor(kind, parentElement = null) {
+    this.kind = kind;
+    this.parentElement = parentElement;
+    this.children = [];
+    if (parentElement) parentElement.children.push(this);
+  }
+
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+
+  closest(selector) {
+    let current = this;
+    while (current) {
+      if (
+        (selector === 'comment-root' && current.kind === 'comment') ||
+        (selector === 'virtual-view' && current.kind === 'view') ||
+        (selector === 'virtual-item' &&
+          (current.kind === 'shell' || current.kind === 'view'))
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+}
+const hideShellContext = vm.createContext({
+  DOM_COMMENT_ROOT_SELECTOR: 'comment-root',
+  Element: FakeHideElement,
+  VIRTUAL_ITEM_SELECTOR: 'virtual-item',
+  VIRTUAL_VIEW_SELECTOR: 'virtual-view',
+  document: { body: null, documentElement: null },
+  isEligibleVirtualScrollerItem: () => true,
+  isOverBroadHideRoot: () => false,
+  shouldPromoteFeedShell: () => false,
+});
+vm.runInContext(
+  `${hideShellSource}
+  globalThis.testFindHideShell = findHideShell;`,
+  hideShellContext
+);
+const fakeView = new FakeHideElement('view');
+const fakeContentShell = new FakeHideElement('shell', fakeView);
+const fakeArticle = new FakeHideElement('article', fakeContentShell);
+assert.equal(
+  hideShellContext.testFindHideShell(fakeArticle),
+  fakeContentShell,
+  'a blocked virtual-list post must hide the inner content shell'
+);
+assert.equal(
+  hideShellContext.testFindHideShell(fakeView),
+  fakeContentShell,
+  'even a virtual-view root must resolve to its inner content shell'
+);
+const recycledShellSource = sourceBetween(
+  '  function restoreRecycledVirtualContentShells(',
+  '  function hideBlockedDOMPosts('
+);
+assert.match(recycledShellSource, /node\.matches\(VIRTUAL_VIEW_SELECTOR\)/);
+assert.match(recycledShellSource, /hasUIDOutsideCommentRoots\(node, uid\)/);
+assert.match(
+  recycledShellSource,
+  /clearOwnBlockedContentHideState\(node\)/
+);
+const hideBlockedPostsSource = sourceBetween(
+  '  function hideBlockedDOMPosts(',
+  '  function queueBlockedDOMRefresh('
+);
+assert.ok(
+  hideBlockedPostsSource.indexOf(
+    'restoreRecycledVirtualContentShells(root)'
+  ) <
+    hideBlockedPostsSource.indexOf(
+      'root.querySelectorAll(DOM_UID_SELECTOR)'
+    ),
+  'recycled virtual rows must be restored before scanning their current UID'
+);
 const runtimeApplySource = sourceBetween(
   '  function applyRuntimeConfig(',
   '  WB_INTERNAL.applyConfig ='
@@ -561,7 +741,7 @@ vm.runInContext(
 vm.runInContext(
   sourceBetween(
     '  function classifyInterceptedRequest(url) {',
-    '  const EMPTY_UNREAD_TIMELINE_RESPONSE'
+    '  // 微博新版 Axios 依赖原生网络对象的身份与完整生命周期。'
   ),
   context
 );
@@ -589,7 +769,7 @@ const fixture = {
 };
 const filtered = testAPI.transformContentResponseData(
   fixture,
-  'https://weibo.com/ajax/feed/hottimeline'
+  'https://weibo.com/ajax/statuses/mymblog'
 );
 assert.equal(filtered.changed, true);
 assert.deepEqual(
@@ -606,7 +786,7 @@ const unsafeFixture = JSON.parse(
 );
 const unsafeResult = testAPI.transformContentResponseData(
   unsafeFixture,
-  'https://weibo.com/ajax/feed/hottimeline'
+  'https://weibo.com/ajax/statuses/mymblog'
 );
 assert.equal(unsafeResult.changed, true);
 assert.equal(Object.getPrototypeOf(unsafeResult.data).polluted, undefined);
@@ -622,15 +802,67 @@ assert.equal(
 const untouched = { statuses: [{ id: 'visible', user: { idstr: '67890' } }] };
 const untouchedResult = testAPI.transformContentResponseData(
   untouched,
-  'https://weibo.com/ajax/feed/hottimeline'
+  'https://weibo.com/ajax/statuses/mymblog'
 );
 assert.equal(untouchedResult.changed, false);
 assert.equal(untouchedResult.data, untouched);
 
 assert.equal(
   testAPI.isFilterableContentURL('https://weibo.com/ajax/feed/hottimeline'),
+  false
+);
+[
+  'unreadfriendstimeline',
+  'friendstimeline',
+  'groupstimeline',
+  'hottimeline',
+  'allGroups',
+].forEach((endpoint) => {
+  assert.equal(
+    testAPI.isFilterableContentURL(
+      `https://weibo.com/ajax/feed/${endpoint}`
+    ),
+    false,
+    `${endpoint} must preserve native statuses and pagination cursors`
+  );
+});
+assert.equal(
+  testAPI.isFilterableContentURL(
+    'https://weibo.com/ajax/statuses/mymblog'
+  ),
   true
 );
+const unreadTimelineRequest = testAPI.classifyInterceptedRequest(
+  'https://weibo.com/ajax/feed/unreadfriendstimeline'
+);
+assert.equal(unreadTimelineRequest.unreadTimeline, true);
+assert.equal(unreadTimelineRequest.timelinePagination, false);
+assert.equal(unreadTimelineRequest.filterContent, false);
+assert.equal(unreadTimelineRequest.relevant, false);
+const unreadTimelinePageRequest = testAPI.classifyInterceptedRequest(
+  'https://weibo.com/ajax/feed/unreadfriendstimeline?max_id=123&count=15'
+);
+assert.equal(unreadTimelinePageRequest.timelinePagination, true);
+assert.equal(unreadTimelinePageRequest.filterContent, false);
+assert.equal(unreadTimelinePageRequest.relevant, false);
+const friendsTimelineRequest = testAPI.classifyInterceptedRequest(
+  'https://weibo.com/ajax/feed/friendstimeline'
+);
+assert.equal(friendsTimelineRequest.filterContent, false);
+assert.equal(friendsTimelineRequest.relevant, false);
+assert.doesNotMatch(source, /EMPTY_UNREAD_TIMELINE_RESPONSE/);
+assert.doesNotMatch(
+  source,
+  /timelineDefault\.value\s*&&\s*request\.unreadTimeline/
+);
+assert.match(source, /const ENABLE_PAGE_NETWORK_INTERCEPTION = false/);
+assert.match(
+  source,
+  /if \(ENABLE_PAGE_NETWORK_INTERCEPTION\) \{[\s\S]*?window\.fetch\s*=[\s\S]*?XMLHttpRequest\.prototype\.send\s*=[\s\S]*?window\.WebSocket\s*=/
+);
+assert.match(source, /TIMELINE_PAGINATION_MIN_INTERVAL_MS = 1100/);
+assert.match(source, /sendNativeXHRWithTimelinePacing\(this, body, request\)/);
+assert.match(source, /XMLHttpRequest\.prototype\.abort = function/);
 assert.equal(
   testAPI.isFilterableContentURL(
     'https://example.com/ajax/feed/hottimeline'
