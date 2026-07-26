@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.0.5
+// @version      2.1.0
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -42,7 +42,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.0.5';
+  const SCRIPT_VERSION = '2.1.0';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -858,9 +858,9 @@
     },
   };
 
-  // === 强制切换到"最新微博"分栏 ===
-  // 策略：1. 启用时屏蔽"全部关注"接口
-  //       2. DOM层面同步Tab选中状态
+  // === 默认切换到"最新微博"分栏 ===
+  // 只同步 Tab 与路由，不拦截"全部关注"接口。这样用户临时切回
+  // "全部关注"时仍能使用微博原生分页，不会收到伪造的空响应。
   (function forceLatestTab() {
     const isHomePage = () => {
       return (
@@ -996,6 +996,9 @@
     'data-__wb_native_hidden_virtual_gap';
   const COMPACTED_VIRTUAL_WRAPPER_ATTR =
     'data-__wb_compacted_virtual_wrapper';
+  const NATIVE_PAGINATION_GUARD_ATTR =
+    'data-__wb_native_pagination_guard';
+  const NATIVE_PAGINATION_GUARD_PX = 192;
   const ORIGINAL_TRANSLATE_Y_ATTR = 'data-__wb_original_translate_y';
   const ORIGINAL_TOP_ATTR = 'data-__wb_original_top';
   const ORIGINAL_LAYOUT_MODE_ATTR = 'data-__wb_original_layout_mode';
@@ -1096,9 +1099,6 @@
   // 保存原生接口。不要挂到 window，避免页面脚本绕过过滤器或读取内部状态。
   const WB_BL_NATIVE = {
     fetch: window.fetch.bind(window),
-    XHROpen: XMLHttpRequest.prototype.open,
-    XHRSend: XMLHttpRequest.prototype.send,
-    WebSocket: window.WebSocket,
   };
 
   function extractUIDFromScheme(item) {
@@ -1705,6 +1705,39 @@
         border: 0 !important;
         overflow: hidden !important;
       }
+      .vue-recycle-scroller__item-view > ${BLOCKED_CONTENT_HIDE_SELECTOR},
+      [class*="vue-recycle-scroller__item-view"] > ${BLOCKED_CONTENT_HIDE_SELECTOR} {
+        /*
+         * DynamicScroller ignores a measured size of exactly 0 and keeps the
+         * previous cached row height, which leaves a large blank slot. Keep a
+         * one-pixel, fully invisible measurement shell so Vue records the new
+         * positive size and moves the following row itself. We intentionally
+         * do not touch the outer item view, its transform, or wrapper height.
+         */
+        display: block !important;
+        height: 1px !important;
+        min-height: 1px !important;
+        max-height: 1px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+      .vue-recycle-scroller[${NATIVE_PAGINATION_GUARD_ATTR}="1"] >
+      .vue-recycle-scroller__slot > *:has(.woo-spinner-main) {
+        /*
+         * Collapsing one of the last rows can move Weibo's native infinite
+         * loader into the viewport in the same layout pass. Its Vue component
+         * can then enter a loading state before the next cursor is ready and
+         * never issue the max_id request. Keep the native loader just outside
+         * the viewport while the blocked tail row is being remeasured. This
+         * does not resize or reposition recycler items or their wrapper.
+         */
+        margin-top: ${NATIVE_PAGINATION_GUARD_PX}px !important;
+      }
       html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR} {
         display: revert !important;
         height: auto !important;
@@ -1727,15 +1760,6 @@
       html[${RELATIONSHIP_PAGE_ATTR}="1"] a${BLOCKED_CONTENT_HIDE_SELECTOR},
       html[${RELATIONSHIP_PAGE_ATTR}="1"] div${BLOCKED_CONTENT_HIDE_SELECTOR}:not(.woo-box-flex):not([class*="woo-box-flex"]) {
         display: block !important;
-      }
-      [${COMPACTED_VIRTUAL_ITEM_ATTR}] {
-        transform: translateY(var(--wb-bl-compact-y, 0px)) translateX(var(--wb-bl-compact-x, 0px)) !important;
-      }
-      [${COMPACTED_TOP_ITEM_ATTR}] {
-        top: var(--wb-bl-compact-top, 0px) !important;
-      }
-      [${COMPACTED_VIRTUAL_WRAPPER_ATTR}] {
-        min-height: var(--wb-bl-compact-wrapper-min-height, auto) !important;
       }
       ${FLOATING_VIDEO_PLAYER_SELECTOR} {
         display: none !important;
@@ -2026,10 +2050,17 @@
     }
   }
 
+  const DOM_FILTERED_TIMELINE_PATH =
+    /^\/ajax\/feed\/(?:allGroups|unreadfriendstimeline|friendstimeline|groupstimeline|hottimeline)\/?$/i;
+
   function isFilterableContentURL(url) {
     const parsed = parseFirstPartyWeiboURL(url);
     if (!parsed) return false;
     const path = parsed.pathname;
+    // 微博分页器必须接收未经删减的 statuses 与游标。若接口层把整页
+    // 过滤为空，原生组件会回退旧缓存并永久保持加载状态。主页时间线
+    // 交由现有 DOM 过滤器隐藏整条容器，同时保留原生分页行为。
+    if (DOM_FILTERED_TIMELINE_PATH.test(path)) return false;
     return (
       /^\/ajax\/(?:feed|statuses|comment|getCommentList|repost|like|recommend|suggest|users?|usercard|profile|friendships)(?:\/|$)/i.test(
         path
@@ -2410,6 +2441,11 @@
   function restoreHiddenRelationshipItems(root = document, options = {}) {
     syncRelationshipPageMode();
     if (!isRelationshipListPage() || !document.querySelectorAll) return;
+    document
+      .querySelectorAll(`[${NATIVE_PAGINATION_GUARD_ATTR}]`)
+      .forEach((scroller) =>
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR)
+      );
     clearVirtualCompactionState(document);
     const nodes = new Set();
     const collect = (scope) => {
@@ -2445,6 +2481,7 @@
     el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
     el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
     el.removeAttribute(COMMENT_CONTENT_ROOT_ATTR);
+    el.removeAttribute('aria-hidden');
     el.style.removeProperty('display');
     el.style.removeProperty('height');
     el.style.removeProperty('min-height');
@@ -2979,7 +3016,20 @@
       isEligibleVirtualScrollerItem(virtualView) &&
       !isOverBroadHideRoot(virtualView, root)
     ) {
-      return virtualView;
+      // Vue RecycleScroller owns the outer item view's transform and height.
+      // Hiding or repositioning that node makes the userscript race Vue while
+      // scrolling. Hide its direct content shell instead so DynamicScroller's
+      // native size observer can collapse the row and recycle it safely.
+      let target =
+        root === virtualView ? virtualView.firstElementChild : root;
+      if (!(target instanceof Element)) return null;
+      while (
+        target.parentElement &&
+        target.parentElement !== virtualView
+      ) {
+        target = target.parentElement;
+      }
+      return target === virtualView ? null : target;
     }
 
     const explicitShell = root.closest(VIRTUAL_ITEM_SELECTOR);
@@ -3051,11 +3101,13 @@
     rememberVirtualItemSlotHeight(target);
     rememberBlockedContentVideos(target);
     pauseVideosIn(target);
+    prepareNativeTimelinePaginationGuard(target);
     target.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
     const id = String(uid || '').trim();
     if (/^\d{5,}$/.test(id)) {
       target.setAttribute(BLOCKED_CONTENT_UID_ATTR, id);
     }
+    target.setAttribute('aria-hidden', 'true');
     suppressFloatingVideoPlayers(document);
     return true;
   }
@@ -3651,166 +3703,105 @@
     setStyleVarIfNeeded(item, '--wb-bl-compact-x', `${x}px`);
   }
 
+  function getNativeTimelinePaginationParts(target) {
+    if (!(target instanceof Element)) return null;
+    const view = target.closest(VIRTUAL_VIEW_SELECTOR);
+    const scroller = view?.closest('.vue-recycle-scroller');
+    const slot = scroller?.querySelector(
+      ':scope > .vue-recycle-scroller__slot'
+    );
+    const loader = slot?.querySelector('.woo-spinner-main');
+    if (!view || !scroller || !slot || !loader) return null;
+    return { view, scroller, slot, loader };
+  }
+
+  function prepareNativeTimelinePaginationGuard(target) {
+    if (isRelationshipListPage()) return;
+    const parts = getNativeTimelinePaginationParts(target);
+    if (!parts) return;
+    const { view, scroller, loader } = parts;
+    const viewRect = view.getBoundingClientRect();
+    const loaderRect = loader.getBoundingClientRect();
+    const viewport = Math.max(window.innerHeight || 0, 1);
+    const loaderNearViewport =
+      loaderRect.bottom >= -NATIVE_PAGINATION_GUARD_PX &&
+      loaderRect.top <=
+        viewport + viewRect.height + NATIVE_PAGINATION_GUARD_PX;
+    const rowNearLoader =
+      loaderRect.top - viewRect.bottom <= viewport &&
+      viewRect.top - loaderRect.bottom <= viewport;
+    if (loaderNearViewport && rowNearLoader) {
+      scroller.setAttribute(NATIVE_PAGINATION_GUARD_ATTR, '1');
+    }
+  }
+
+  function updateNativeTimelinePaginationGuards(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const scrollers = new Set();
+    if (root instanceof Element) {
+      const ownScroller = root.matches('.vue-recycle-scroller')
+        ? root
+        : root.closest('.vue-recycle-scroller');
+      if (ownScroller) scrollers.add(ownScroller);
+    }
+    root
+      .querySelectorAll('.vue-recycle-scroller')
+      .forEach((scroller) => scrollers.add(scroller));
+
+    scrollers.forEach((scroller) => {
+      const slot = scroller.querySelector(
+        ':scope > .vue-recycle-scroller__slot'
+      );
+      const loader = slot?.querySelector('.woo-spinner-main');
+      if (!slot || !loader) {
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR);
+        return;
+      }
+
+      const loaderRect = loader.getBoundingClientRect();
+      const viewport = Math.max(window.innerHeight || 0, 1);
+      const hiddenTailRow = Array.from(
+        scroller.querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
+      ).some((shell) => {
+        const view = shell.parentElement?.matches(VIRTUAL_VIEW_SELECTOR)
+          ? shell.parentElement
+          : null;
+        if (!view) return false;
+        const viewRect = view.getBoundingClientRect();
+        return (
+          loaderRect.top - viewRect.bottom <=
+            viewport + NATIVE_PAGINATION_GUARD_PX &&
+          viewRect.top - loaderRect.bottom <= viewport
+        );
+      });
+      const loaderNearViewport =
+        loaderRect.bottom >= -NATIVE_PAGINATION_GUARD_PX &&
+        loaderRect.top <=
+          viewport + NATIVE_PAGINATION_GUARD_PX + 16;
+      if (hiddenTailRow && loaderNearViewport) {
+        scroller.setAttribute(NATIVE_PAGINATION_GUARD_ATTR, '1');
+      } else {
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR);
+      }
+    });
+  }
+
   function compactVirtualScrollerGaps(root = document) {
     if (isRelationshipListPage()) {
       restoreHiddenRelationshipItems(document);
       return;
     }
     if (!root || !root.querySelectorAll) return;
-    const wrappers = new Set();
-    let processedWrappers = 0;
-    let hiddenSlotCount = 0;
-
-    if (root instanceof Element) {
-      const ownWrapper = root.matches(VIRTUAL_WRAPPER_SELECTOR)
-        ? root
-        : root.closest(VIRTUAL_WRAPPER_SELECTOR);
-      if (ownWrapper) wrappers.add(ownWrapper);
-    }
-    root
-      .querySelectorAll(VIRTUAL_WRAPPER_SELECTOR)
-      .forEach((wrapper) => wrappers.add(wrapper));
-
-    wrappers.forEach((wrapper) => {
-      if (!isEligibleVirtualScrollerWrapper(wrapper)) return;
-      if (!wrapper.closest('.vue-recycle-scroller, #scroller')) return;
-      processedWrappers++;
-
-      const views = Array.from(wrapper.children)
-        .filter(
-          (item) =>
-            item instanceof Element &&
-            item.matches(VIRTUAL_VIEW_SELECTOR) &&
-            isEligibleVirtualScrollerItem(item)
-        )
-        .map((item) => {
-          const y = getVirtualBaseY(item);
-          const rawIndex = getVirtualItemIndex(item);
-          const index =
-            rawIndex !== null
-              ? rawIndex
-              : Number.isFinite(y)
-                ? y
-                : null;
-          const hiddenUID = String(
-            item.getAttribute(BLOCKED_CONTENT_UID_ATTR) || ''
-          ).trim();
-          const hiddenVirtualUID = getHiddenVirtualItemUID(item);
-          const nativeHiddenGap = isNativeHiddenVirtualGap(item, y);
-          const view = {
-            item,
-            index,
-            mode: getVirtualLayoutMode(item),
-            y,
-            x: getTranslateX(item),
-            hidden: !!hiddenVirtualUID || nativeHiddenGap,
-            hiddenUID: hiddenVirtualUID || hiddenUID,
-            nativeHiddenGap,
-            parked: isParkedVirtualItem(item, y),
-            slotHeight: 0,
-            estimatedY: y,
-          };
-          return view;
-        })
-        .filter((view) => view.index !== null)
-        .sort((a, b) => a.index - b.index || a.y - b.y);
-
-      const state = getVirtualWrapperCompactionState(wrapper);
-      views.forEach((view, index) => {
-        const nextNonParked = views
-          .slice(index + 1)
-          .find(
-            (candidate) =>
-              !candidate.parked &&
-              Number.isFinite(candidate.y) &&
-              candidate.y > view.y
-          );
-        view.slotHeight = getVirtualSlotHeight(view, nextNonParked);
-      });
-      views.forEach((view, index) => {
-        if (!view.parked) {
-          view.estimatedY = view.y;
-          return;
-        }
-        const previous = views[index - 1];
-        if (previous && Number.isFinite(previous.estimatedY)) {
-          view.estimatedY =
-            previous.estimatedY + Math.max(0, previous.slotHeight || 0);
-        }
-      });
-      views.forEach((view, index) => {
-        if (view.hidden) {
-          const slotHeight =
-            view.slotHeight || rememberVirtualItemSlotHeight(view.item);
-          if (slotHeight > 0) {
-            state.hiddenSlots.set(view.index, slotHeight);
-          }
-          return;
-        }
-
-        if (state.hiddenSlots.has(view.index)) {
-          state.hiddenSlots.delete(view.index);
-        }
-      });
-
-      if (!views.length || !state.hiddenSlots.size) {
-        views.forEach((view) => clearVirtualItemCompaction(view.item));
-        clearVirtualWrapperCompaction(wrapper);
-        VIRTUAL_COMPACTION_RUNTIME.delete(wrapper);
-        return;
-      }
-      hiddenSlotCount += state.hiddenSlots.size;
-
-      views.forEach((view) => {
-        if (view.hidden) {
-          view.item.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
-          if (view.nativeHiddenGap && !view.hiddenUID) {
-            view.item.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
-            view.item.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
-            view.item.setAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR, '1');
-          } else if (view.hiddenUID) {
-            view.item.setAttribute(BLOCKED_CONTENT_UID_ATTR, view.hiddenUID);
-          }
-          view.item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
-          view.item.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
-          if (!view.nativeHiddenGap || view.hiddenUID) {
-            view.item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
-            setImportantStyleIfNeeded(view.item, 'display', 'none');
-            setImportantStyleIfNeeded(view.item, 'height', '0px');
-            setImportantStyleIfNeeded(view.item, 'min-height', '0px');
-            setImportantStyleIfNeeded(view.item, 'margin', '0px');
-            setImportantStyleIfNeeded(view.item, 'padding', '0px');
-          }
-          return;
-        }
-
-        view.item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
-        clearBlockedContentHideState(view.item);
-        const removedBefore = sumHiddenSlotHeights(state, view.index);
-        if (removedBefore > 0) {
-          if (
-            view.parked &&
-            (!Number.isFinite(view.estimatedY) || view.estimatedY <= -9000)
-          ) {
-            clearVirtualItemCompaction(view.item);
-            return;
-          }
-          const baseY = view.parked ? view.estimatedY : view.y;
-          const y = Math.max(0, baseY - removedBefore);
-          applyVirtualItemCompaction(view.item, view.x, y, view.mode);
-        } else {
-          clearVirtualItemCompaction(view.item);
-        }
-      });
-      applyVirtualWrapperCompaction(
-        wrapper,
-        sumHiddenSlotHeights(state)
-      );
-    });
-    VIRTUAL_COMPACTION_RUNTIME.recordRun(
-      processedWrappers,
-      hiddenSlotCount
-    );
+    // Older builds changed Vue's translate/top coordinates and wrapper
+    // min-height to close blocked rows. Those writes conflict with Vue's own
+    // recycler updates and can freeze scrolling. Remove any legacy state and
+    // let the scroller remeasure the hidden inner content shell itself.
+    const cleanupRoot =
+      root instanceof Element
+        ? root.closest(VIRTUAL_WRAPPER_SELECTOR) || root
+        : root;
+    clearVirtualCompactionState(cleanupRoot);
+    updateNativeTimelinePaginationGuards(cleanupRoot);
   }
 
   function isWeiboSearchResultPage() {
@@ -4750,6 +4741,52 @@
     return hiddenAny;
   }
 
+  function restoreRecycledVirtualContentShells(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const scope =
+      root instanceof Element
+        ? root.closest(VIRTUAL_VIEW_SELECTOR) || root
+        : root;
+    const nodes = [];
+    if (
+      scope instanceof Element &&
+      scope.matches(BLOCKED_CONTENT_HIDE_SELECTOR)
+    ) {
+      nodes.push(scope);
+    }
+    scope
+      .querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
+      .forEach((node) => nodes.push(node));
+
+    Array.from(new Set(nodes)).forEach((node) => {
+      if (
+        !(node instanceof Element) ||
+        !node.closest(VIRTUAL_VIEW_SELECTOR) ||
+        isInsideCommentContentRoot(node)
+      ) {
+        return;
+      }
+      // Migrate legacy outer-view markers immediately. New builds only hide
+      // the direct content shell, which lets Vue keep ownership of recycling.
+      if (node.matches(VIRTUAL_VIEW_SELECTOR)) {
+        clearOwnBlockedContentHideState(node);
+        return;
+      }
+      const uid = String(
+        node.getAttribute(BLOCKED_CONTENT_UID_ATTR) || ''
+      ).trim();
+      const stillRepresentsBlockedUser =
+        /^\d{5,}$/.test(uid) &&
+        BL.has(uid) &&
+        hasUIDOutsideCommentRoots(node, uid);
+      if (!stillRepresentsBlockedUser) {
+        // Vue reuses the same shell for another post while scrolling. Never
+        // let a marker from the previous blocked author hide the recycled row.
+        clearOwnBlockedContentHideState(node);
+      }
+    });
+  }
+
   function hideBlockedDOMPosts(root = document) {
     syncRelationshipPageMode();
     const hiddenAd = hideRecognizedAds(root || document);
@@ -4760,6 +4797,7 @@
       restoreHiddenRelationshipItems(document);
       return;
     }
+    restoreRecycledVirtualContentShells(root);
     if (!BL.size) {
       compactVirtualScrollerGaps(root);
       return;
@@ -4901,22 +4939,47 @@
     const filterUser = /^\/ajax\/statuses\/filterUser\/?$/i.test(path);
     const unfilterUser = /^\/ajax\/statuses\/unfilterUser\/?$/i.test(path);
     const unreadTimeline = /\/unreadfriendstimeline(?:\/|$)/i.test(path);
+    const timelinePagination =
+      unreadTimeline && parsed.searchParams.has('max_id');
     const relationshipFriends = isRelationshipFriendsURL(parsed.href);
     const filterContent = isFilterableContentURL(parsed.href);
     return {
       relevant:
         filterUser ||
         unfilterUser ||
-        unreadTimeline ||
         relationshipFriends ||
         filterContent,
       url: parsed.href,
       filterUser,
       unfilterUser,
       unreadTimeline,
+      timelinePagination,
       relationshipFriends,
       filterContent,
     };
+  }
+
+  // When a fetched page contains many locally blocked authors, Vue collapses
+  // those rows before the native infinite-loader leaves the viewport. Weibo
+  // can then request several older pages back-to-back without a new user
+  // scroll and eventually leave Axios in a permanent loading state. Preserve
+  // every native response, but space only those automatic pagination calls.
+  const TIMELINE_PAGINATION_MIN_INTERVAL_MS = 1100;
+  let nextTimelinePaginationRequestAt = 0;
+
+  function reserveTimelinePaginationDelay(request) {
+    if (
+      !request?.timelinePagination ||
+      CONTENT_FILTER_CFG.hideBlacklistPosts !== true ||
+      !BL.size
+    ) {
+      return 0;
+    }
+    const now = Date.now();
+    const scheduledAt = Math.max(now, nextTimelinePaginationRequestAt);
+    nextTimelinePaginationRequestAt =
+      scheduledAt + TIMELINE_PAGINATION_MIN_INTERVAL_MS;
+    return Math.max(0, scheduledAt - now);
   }
 
   function createCompatibleJSONResponse(originalResponse, data) {
@@ -4946,13 +5009,11 @@
     });
   }
 
-  const EMPTY_UNREAD_TIMELINE_RESPONSE = Object.freeze({
-    ok: 1,
-    statuses: [],
-    since_id_str: '0',
-    max_id_str: '0',
-  });
-
+  // 微博新版 Axios 依赖原生网络对象的身份与完整生命周期。全局替换
+  // fetch / XMLHttpRequest / WebSocket 会让时间线分页随机进入永久加载，
+  // 因此网络响应改写永久关闭；内容统一在原生渲染后由 DOM 层处理。
+  const ENABLE_PAGE_NETWORK_INTERCEPTION = false;
+  if (ENABLE_PAGE_NETWORK_INTERCEPTION) {
   // === 仅处理已知微博接口的 Fetch 拦截 ===
   window.fetch = async function (input, init) {
     const rawURL =
@@ -4962,15 +5023,14 @@
           ? input.href
           : input?.url || '';
     const request = classifyInterceptedRequest(rawURL);
-    // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
-    if (timelineDefault.value && request.unreadTimeline) {
-      return new Response(
-        JSON.stringify(EMPTY_UNREAD_TIMELINE_RESPONSE),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
+    const paginationDelay = reserveTimelinePaginationDelay(request);
+    if (paginationDelay > 0) {
+      const signal =
+        init?.signal ||
+        (typeof Request !== 'undefined' && input instanceof Request
+          ? input.signal
+          : undefined);
+      await sleep(paginationDelay, signal);
     }
     const filterUID =
       request.filterUser || request.unfilterUser
@@ -5040,16 +5100,47 @@
   }
 
   const xhrRequestMetadata = new WeakMap();
+  const pendingTimelineXHR = new WeakMap();
+
+  function clearPendingTimelineXHR(xhr) {
+    const pending = pendingTimelineXHR.get(xhr);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    pendingTimelineXHR.delete(xhr);
+    return true;
+  }
+
+  function sendNativeXHRWithTimelinePacing(xhr, body, request) {
+    const delay = reserveTimelinePaginationDelay(request);
+    if (delay <= 0) {
+      return WB_BL_NATIVE.XHRSend.call(xhr, body);
+    }
+    const timer = setTimeout(() => {
+      pendingTimelineXHR.delete(xhr);
+      try {
+        WB_BL_NATIVE.XHRSend.call(xhr, body);
+      } catch (error) {
+        console.warn('[WB-BL] 时间线分页请求延迟发送失败', error);
+      }
+    }, delay);
+    pendingTimelineXHR.set(xhr, { timer });
+    return undefined;
+  }
 
   XMLHttpRequest.prototype.open = function (method, url, ...args) {
+    clearPendingTimelineXHR(this);
     const rawURL = url instanceof URL ? url.href : String(url || '');
     xhrRequestMetadata.set(this, classifyInterceptedRequest(rawURL));
     return WB_BL_NATIVE.XHROpen.call(this, method, url, ...args);
   };
+  XMLHttpRequest.prototype.abort = function () {
+    clearPendingTimelineXHR(this);
+    return WB_BL_NATIVE.XHRAbort.call(this);
+  };
   XMLHttpRequest.prototype.send = function (body) {
     const request = xhrRequestMetadata.get(this);
     if (!request?.relevant) {
-      return WB_BL_NATIVE.XHRSend.call(this, body);
+      return sendNativeXHRWithTimelinePacing(this, body, request);
     }
     this.addEventListener('readystatechange', () => {
       if (this.readyState === 4 && this.status === 200) {
@@ -5072,14 +5163,6 @@
           }
         }
 
-        // 只在启用"主页默认显示最新微博"时屏蔽"全部关注"流
-        if (timelineDefault.value && request.unreadTimeline) {
-          defineXHRTextResponse(
-            this,
-            JSON.stringify(EMPTY_UNREAD_TIMELINE_RESPONSE)
-          );
-          return;
-        }
         if (request.relationshipFriends) {
           try {
             const data = JSON.parse(this.responseText);
@@ -5105,7 +5188,7 @@
         }
       }
     });
-    return WB_BL_NATIVE.XHRSend.call(this, body);
+    return sendNativeXHRWithTimelinePacing(this, body, request);
   };
 
   // === WebSocket 拦截 ===
@@ -5208,6 +5291,8 @@
       }
     }
   };
+
+  }
 
   // === MutationObserver 过滤 ===
   (function () {
