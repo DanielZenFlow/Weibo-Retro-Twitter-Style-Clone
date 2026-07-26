@@ -5,9 +5,16 @@ const vm = require('node:vm');
 
 const scriptPath = path.join(
   __dirname,
-  'weibo-retro-twitter-style-clone.user.js'
+  'pynseq-for-weibo.user.js'
 );
 const source = fs.readFileSync(scriptPath, 'utf8');
+const readmeSource = fs.readFileSync(path.join(__dirname, 'readme.md'), 'utf8');
+const iconPath = path.join(__dirname, 'pynseq-for-weibo-icon.png');
+const iconSource = fs.readFileSync(iconPath);
+const immutableIconURL =
+  'https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png';
+const greasyForkURL =
+  'https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C';
 
 function sourceBetween(startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -19,6 +26,7 @@ function sourceBetween(startMarker, endMarker) {
 
 assert.doesNotMatch(source, /window\.(?:WB_RETRO_CONFIRM|WB_BL_SYNC)/);
 assert.doesNotMatch(source, /function\s+(?:filterData|filterAdsFromData)\s*\(/);
+assert.match(source, /^\/\/ @description:en\s+\S.+$/m);
 assert.match(source, /function\s+filterContentTree\s*\(/);
 assert.match(source, /function\s+runControlledSync\s*\(/);
 assert.match(source, /controller\.abort\(\)/);
@@ -26,38 +34,49 @@ assert.match(source, /USER_SCRIPT_UI_SELECTOR/);
 assert.doesNotMatch(source, /\balert\s*\(/);
 assert.match(source, /function\s+showNotification\s*\(/);
 assert.match(source, /WB_INTERNAL\.notify\s*=\s*showNotification/);
+assert.match(source, /const GITHUB_URL = 'https:\/\/github\.com\/DanielZenFlow\/Pynseq-Weibo'/);
+assert.equal(source.includes(`// @icon         ${immutableIconURL}`), true);
+assert.equal(source.includes(`// @icon64       ${immutableIconURL}`), true);
+assert.equal(
+  fs.existsSync(path.join(__dirname, 'weibo-retro-twitter-style-clone.user.js')),
+  false
+);
+assert.deepEqual(
+  Array.from(iconSource.subarray(0, 8)),
+  [137, 80, 78, 71, 13, 10, 26, 10]
+);
+assert.equal(iconSource.readUInt32BE(16), iconSource.readUInt32BE(20));
+assert.equal(iconSource[25], 2, 'userscript icon must be opaque truecolor PNG');
+assert.match(readmeSource, /https:\/\/github\.com\/DanielZenFlow\/Pynseq-Weibo/);
+assert.match(readmeSource, /^# Pynseq for Weibo｜屏序·微博$/m);
+assert.match(readmeSource, /^> 屏其不欲见者，复其应有之序。$/m);
+assert.equal(readmeSource.includes(greasyForkURL), true);
+assert.match(readmeSource, /https:\/\/buymeacoffee\.com\/danielzenflow/);
+assert.match(source, /#wb-retro-toast\s*\{[\s\S]*?z-index:\s*2147483647/);
+assert.match(source, /width:\s*min\(215px,\s*calc\(100vw - 32px\)\)/);
+assert.match(source, /#wb-retro-toast\.is-visible\s*\{\s*opacity:\s*1/);
+assert.match(source, /USER_SCRIPT_UI_SELECTOR[\s\S]*?'#wb-retro-toast'/);
+assert.doesNotMatch(source, /wb-retro-notice-stack|wb-retro-notice-close/);
+assert.match(
+  source,
+  /showUserContextToastImpl = \(message\) =>\s*showNotification\(message, \{ type: 'success' \}\)/
+);
+const confirmStyleSource = sourceBetween(
+  '  function ensureCenteredConfirmStyles() {',
+  '  function createCenteredConfirm('
+);
+assert.match(confirmStyleSource, /width:\s*min\(430px,\s*calc\(100vw - 32px\)\)/);
+assert.match(confirmStyleSource, /padding:\s*24px/);
+assert.match(confirmStyleSource, /border:\s*1px solid #cfc5bb/);
+assert.match(confirmStyleSource, /border-radius:\s*0/);
+assert.match(confirmStyleSource, /background:\s*#f7f3ee/);
+assert.match(confirmStyleSource, /z-index:\s*2147483647/);
 assert.match(source, /WB_INTERNAL\.applyConfig\s*=\s*applyRuntimeConfig/);
 assert.match(source, /wb-retro-runtime-style/);
 assert.match(source, /const WB_CONFIG_SCHEMA_VERSION = 1/);
 assert.match(source, /@grant\s+GM_removeValueChangeListener/);
-assert.match(source, /WB_INTERNAL\.getDiagnostics\s*=/);
-assert.match(source, /wbset-diagnostics-copy/);
-const diagnosticsSource = sourceBetween(
-  '  function getDiagnosticPageType() {',
-  '  (async () => {'
-);
-assert.match(diagnosticsSource, /pageType:\s*getDiagnosticPageType\(\)/);
-assert.doesNotMatch(diagnosticsSource, /path:\s*location\.pathname/);
-const diagnosticContext = vm.createContext({
-  location: { hostname: 'weibo.com', pathname: '/u/1960878503' },
-});
-vm.runInContext(
-  sourceBetween(
-    '  function getDiagnosticPageType() {',
-    '  WB_INTERNAL.getDiagnostics ='
-  ),
-  diagnosticContext
-);
-assert.equal(
-  vm.runInContext('getDiagnosticPageType()', diagnosticContext),
-  'user-profile'
-);
-diagnosticContext.location.hostname = 's.weibo.com';
-diagnosticContext.location.pathname = '/weibo';
-assert.equal(
-  vm.runInContext('getDiagnosticPageType()', diagnosticContext),
-  'search-results'
-);
+assert.doesNotMatch(source, /WB_INTERNAL\.getDiagnostics\s*=/);
+assert.doesNotMatch(source, /diagnostic|高级诊断|运行诊断/i);
 assert.match(source, /const THROTTLE_MS = 350/);
 assert.ok(
   source.indexOf('const THROTTLE_MS = 350') <
@@ -71,28 +90,42 @@ assert.match(
 );
 assert.match(
   source,
-  /data-wbset-page="uids">本地屏蔽列表<\/button>/
-);
-assert.match(source, /data-wbset-page="data">数据管理<\/button>/);
-assert.match(
-  source,
-  /data-wbset-page="diagnostics">高级诊断<\/button>/
+  /data-wbset-page="uids">本地屏蔽名单<\/button>/
 );
 assert.match(
   source,
-  /data-wbset-section="diagnostics"/
+  /data-wbset-page="data">新浪微博黑名单管理<\/button>/
+);
+assert.match(
+  source,
+  /data-wbset-page="about">关于<\/button>/
 );
 const settingsSource = sourceBetween(
   '/* === Settings v5:',
   '/* === /Settings v5 === */'
 );
+const panelMarkupSource = sourceBetween(
+  '      panel.innerHTML = `',
+  '      document.body.appendChild(panel);'
+);
 const settingsHTMLIds = new Set(
-  Array.from(settingsSource.matchAll(/\bid="([^"]+)"/g), (match) => match[1])
+  [
+    ...Array.from(
+      settingsSource.matchAll(/\bid="([^"]+)"/g),
+      (match) => match[1]
+    ),
+    ...Array.from(
+      settingsSource.matchAll(/\.id\s*=\s*['"]([^'"]+)['"]/g),
+      (match) => match[1]
+    ),
+  ]
 );
 assert.equal(
-  settingsHTMLIds.size,
-  Array.from(settingsSource.matchAll(/\bid="([^"]+)"/g)).length,
-  'settings markup must not contain duplicate IDs'
+  new Set(
+    Array.from(panelMarkupSource.matchAll(/\bid="([^"]+)"/g), (match) => match[1])
+  ).size,
+  Array.from(panelMarkupSource.matchAll(/\bid="([^"]+)"/g)).length,
+  'settings panel markup must not contain duplicate IDs'
 );
 const settingsNavPages = Array.from(
   settingsSource.matchAll(/data-wbset-page="([^"]+)"/g),
@@ -120,15 +153,104 @@ assert.deepEqual(
 );
 const dataSettingsSection = sourceBetween(
   'data-wbset-section="data"',
-  'data-wbset-section="diagnostics"'
+  'data-wbset-section="about"'
 );
-assert.doesNotMatch(dataSettingsSection, /wbset-diagnostics/);
-assert.match(source, /@version\s+2\.0\.0/);
-assert.match(source, /const SCRIPT_VERSION = '2\.0\.0'/);
-assert.match(settingsSource, /<span class="wbset-version">v2\.0\.0<\/span>/);
+assert.doesNotMatch(dataSettingsSection, /diagnostic|诊断/i);
+const generalSettingsSection = sourceBetween(
+  'data-wbset-section="general"',
+  'data-wbset-section="blacklist"'
+);
+assert.equal(
+  generalSettingsSection.match(/class="wbset-sec-title">([^<]+)</)?.[1],
+  '设置向导',
+  'the onboarding launcher must be the first section on the General tab'
+);
+assert.match(source, /@version\s+2\.0\.5/);
+assert.match(source, /const SCRIPT_VERSION = '2\.0\.5'/);
+assert.match(source, /const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博'/);
+assert.match(settingsSource, /<span class="wbset-version">v\$\{SCRIPT_VERSION\}<\/span>/);
 assert.doesNotMatch(source, /本地黑名单/);
-assert.match(source, /weibo-local-block-list-/);
+assert.match(source, /pynseq-for-weibo-blocklist-\$\{timestamp\}\.json/);
 assert.doesNotMatch(source, /weibo-blacklist-backup-/);
+assert.equal(
+  (source.match(/GM_registerMenuCommand\(['"]设置['"]/g) || []).length,
+  1
+);
+assert.equal(
+  (source.match(/GM_registerMenuCommand\(['"]关于['"]/g) || []).length,
+  1
+);
+assert.match(source, /function\s+openOnboarding\s*\(/);
+assert.match(source, /\$\{stepIndex \+ 1\} \/ 5/);
+assert.match(source, /class="wbset-onboard-skip" type="button">使用默认设置<\/button>/);
+assert.doesNotMatch(source, /跳过并使用默认设置/);
+assert.match(
+  source,
+  /font-size:11\.5px!important;\s*font-weight:800!important;line-height:1\.3!important/
+);
+assert.match(source, /Buy me a coffee/);
+const onboardingSource = sourceBetween(
+  '  function openOnboarding(',
+  '  function openPanel('
+);
+const onboardingSettingKeys = Array.from(
+  new Set(
+    Array.from(
+      onboardingSource.matchAll(/data-wbset-setting="([^"]+)"/g),
+      (match) => match[1]
+    )
+  )
+).sort();
+assert.deepEqual(onboardingSettingKeys, [
+  'confirmBeforeBlocking',
+  'defaultLatestTimeline',
+  'hideAds',
+  'hideBlacklistComments',
+  'hideBlacklistInteractions',
+  'hideBlacklistPosts',
+  'hideBlacklistSearchResults',
+  'hideBlacklistUserCards',
+  'showSettingsButton',
+]);
+const onboardingFinishSource = sourceBetween(
+  '    const finish = (nextSettings) => {',
+  '    const bindDraftInputs = () => {'
+);
+assert.match(
+  onboardingFinishSource,
+  /const previousLatestTimeline = loadCfg\(\)\.defaultLatestTimeline !== false/
+);
+assert.match(onboardingFinishSource, /CFG = saveCfg\(normalizeCfg\(nextSettings\)\)/);
+assert.match(onboardingFinishSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
+assert.match(onboardingFinishSource, /applyPanelSettingsNow\(\)/);
+assert.match(onboardingFinishSource, /syncLauncherButton\(\)/);
+assert.match(onboardingFinishSource, /reconcileHomeTimelineSetting\(/);
+assert.match(source, /if \(!isInsideCommentSurface\(el\)\) return null/);
+const commentRootSource = sourceBetween(
+  '  function findCommentRootForUID(',
+  '  function findContentRootForUID('
+);
+assert.ok(
+  commentRootSource.indexOf('if (!isInsideCommentSurface(el)) return null;') <
+    commentRootSource.indexOf('let fallback = null;'),
+  'non-comment author links must be rejected before generic comment fallback'
+);
+const immediateBlockSource = sourceBetween(
+  '  function addContextUserToBL(',
+  '  function getCookieValue('
+);
+assert.match(immediateBlockSource, /hideContentRoot\(post, ctx\.uid\)/);
+assert.match(immediateBlockSource, /compactVirtualScrollerGaps\(document\)/);
+assert.match(immediateBlockSource, /nudgeTimelineLayout\(\)/);
+const runtimeApplySource = sourceBetween(
+  '  function applyRuntimeConfig(',
+  '  WB_INTERNAL.applyConfig ='
+);
+assert.ok(
+  runtimeApplySource.indexOf('restoreBlockedContentHideState(document)') <
+    runtimeApplySource.indexOf('hideBlockedDOMPosts(document)'),
+  'scope changes must restore previously hidden roots before reapplying enabled filters'
+);
 assert.match(source, /const VIRTUAL_COMPACTION_RUNTIME =/);
 assert.doesNotMatch(source, /virtualScrollerCompactionState/);
 assert.equal((source.match(/new MutationObserver/g) || []).length, 2);
@@ -235,7 +357,7 @@ const configContext = vm.createContext({
 });
 vm.runInContext(
   sourceBetween(
-    '  function normalizeStoredConfig(rawCfg) {',
+    '  function isUnsafeObjectKey(key) {',
     '  WB_INTERNAL.config ='
   ),
   configContext
@@ -279,6 +401,25 @@ assert.equal(configContext.futureConfig.schemaVersion, 99);
 assert.equal(configContext.futureConfig.futureOption, 'kept');
 assert.equal(configWrites.length, writesBeforeFutureRead);
 
+configStorage.set(
+  'cfg',
+  '{"schemaVersion":1,"hideAds":false,"__proto__":{"polluted":true},"constructor":{"polluted":true}}'
+);
+vm.runInContext(
+  'globalThis.safeConfig = readStoredConfig();',
+  configContext
+);
+assert.equal(configContext.safeConfig.hideAds, false);
+assert.equal(Object.getPrototypeOf(configContext.safeConfig).polluted, undefined);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(configContext.safeConfig, '__proto__'),
+  false
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(configContext.safeConfig, 'constructor'),
+  false
+);
+
 const relaySource = sourceBetween(
   '  function requestOfficialBlockViaMainHost(uid) {',
   '  async function processOfficialBlockRelay() {'
@@ -297,16 +438,85 @@ assert.match(saveHandlerSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
 assert.match(saveHandlerSource, /applyPanelSettingsNow\(\)/);
 assert.match(saveHandlerSource, /syncLauncherButton\(\)/);
 assert.match(saveHandlerSource, /closePanel\(\{ reset: false \}\)/);
-assert.match(saveHandlerSource, /openNativeHomeTimeline\(\)/);
-assert.match(saveHandlerSource, /location\.assign\s*\(/);
+assert.match(saveHandlerSource, /reconcileHomeTimelineSetting\(/);
 assert.equal((source.match(/location\.reload\s*\(/g) || []).length, 1);
 const nativeHomeSource = sourceBetween(
-  '      function openNativeHomeTimeline() {',
-  "      panel.querySelector('#wbset-save').addEventListener"
+  '  function openNativeHomeTimeline() {',
+  '  function openLatestHomeTimeline() {'
 );
-assert.match(nativeHomeSource, /title="全部关注"/);
+assert.match(nativeHomeSource, /const allFollowingTab = findTimelineTab\(/);
 assert.match(nativeHomeSource, /allFollowingTab\.click\(\)/);
 assert.match(nativeHomeSource, /settings-native-home-fallback/);
+const latestHomeSource = sourceBetween(
+  '  function openLatestHomeTimeline() {',
+  '  function reconcileHomeTimelineSetting('
+);
+assert.match(latestHomeSource, /latestTab\.click\(\)/);
+assert.match(latestHomeSource, /settings-latest-home-fallback/);
+const reconcileTimelineSource = sourceBetween(
+  '  function reconcileHomeTimelineSetting(',
+  '  function openOnboarding('
+);
+assert.match(reconcileTimelineSource, /openLatestHomeTimeline\(\)/);
+assert.match(reconcileTimelineSource, /openNativeHomeTimeline\(\)/);
+class FakeTimelineTab {
+  constructor(title) {
+    this.title = title;
+    this.selected = false;
+    this.clicks = 0;
+  }
+  click() {
+    this.clicks++;
+    this.selected = true;
+  }
+  getAttribute(name) {
+    if (name === 'aria-selected') return this.selected ? 'true' : null;
+    return null;
+  }
+}
+const allFollowingTimelineTab = new FakeTimelineTab('全部关注');
+const latestTimelineTab = new FakeTimelineTab('最新微博');
+const timelineAssignments = [];
+const timelineContext = vm.createContext({
+  WB_INTERNAL: { dom: { schedule() {} } },
+  HTMLElement: FakeTimelineTab,
+  document: {
+    querySelector(selector) {
+      if (selector.includes('全部关注')) return allFollowingTimelineTab;
+      if (selector.includes('最新微博')) return latestTimelineTab;
+      return null;
+    },
+  },
+  location: {
+    hostname: 'weibo.com',
+    pathname: '/',
+    origin: 'https://weibo.com',
+    assign(url) {
+      timelineAssignments.push(url);
+    },
+  },
+});
+vm.runInContext(
+  `${sourceBetween(
+    '  function isWeiboHomeTimelineRoute() {',
+    '  function openOnboarding('
+  )}
+  globalThis.reconcileTimeline = reconcileHomeTimelineSetting;`,
+  timelineContext
+);
+assert.equal(timelineContext.reconcileTimeline(false, true), true);
+assert.equal(latestTimelineTab.clicks, 1);
+assert.equal(allFollowingTimelineTab.clicks, 0);
+allFollowingTimelineTab.selected = false;
+assert.equal(timelineContext.reconcileTimeline(true, false), true);
+assert.equal(allFollowingTimelineTab.clicks, 1);
+assert.equal(timelineAssignments.length, 0);
+const remoteConfigSource = sourceBetween(
+  "  if (typeof GM_addValueChangeListener === 'function') {",
+  "  if (document.readyState === 'loading')"
+);
+assert.match(remoteConfigSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
+assert.match(remoteConfigSource, /reconcileHomeTimelineSetting\(/);
 
 const hotBandSource = sourceBetween(
   '  function hideSearchHotBand(root = document) {',
@@ -338,10 +548,14 @@ const context = vm.createContext({
 });
 
 vm.runInContext(
-  sourceBetween(
+  `${sourceBetween(
+    '  function isUnsafeObjectKey(key) {',
+    '  function normalizeStoredConfig(rawCfg) {'
+  )}
+  ${sourceBetween(
     '  const MAX_FILTER_DEPTH = 80;',
     '  const DOM_UID_SELECTOR = ['
-  ),
+  )}`,
   context
 );
 vm.runInContext(
@@ -385,6 +599,24 @@ assert.deepEqual(
 assert.deepEqual(
   Array.from(filtered.data.comments, (item) => item.id),
   ['visible-comment']
+);
+
+const unsafeFixture = JSON.parse(
+  '{"statuses":[{"id":"visible","user":{"idstr":"67890"}}],"__proto__":{"polluted":true},"constructor":{"polluted":true}}'
+);
+const unsafeResult = testAPI.transformContentResponseData(
+  unsafeFixture,
+  'https://weibo.com/ajax/feed/hottimeline'
+);
+assert.equal(unsafeResult.changed, true);
+assert.equal(Object.getPrototypeOf(unsafeResult.data).polluted, undefined);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(unsafeResult.data, '__proto__'),
+  false
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(unsafeResult.data, 'constructor'),
+  false
 );
 
 const untouched = { statuses: [{ id: 'visible', user: { idstr: '67890' } }] };

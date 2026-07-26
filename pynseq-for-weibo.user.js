@@ -1,13 +1,18 @@
 ﻿// ==UserScript==
 // @sandbox      raw
-// @name         微博按时间线显示|隐藏本地屏蔽用户内容|屏蔽热搜
-// @namespace    https://github.com/DanielZenFlow
-// @version      2.0.0
+// @name         Pynseq for Weibo｜屏序·微博
+// @name:zh-CN   Pynseq for Weibo｜屏序·微博
+// @name:en      Pynseq for Weibo｜屏序·微博
+// @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
+// @version      2.0.5
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
+// @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
 // @license      MIT
-// @homepage     https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone
-// @supportURL   https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone/issues
+// @homepage     https://github.com/DanielZenFlow/Pynseq-Weibo
+// @supportURL   https://github.com/DanielZenFlow/Pynseq-Weibo/issues
+// @icon         https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png
+// @icon64       https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png
 // @match        https://weibo.com/*
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
@@ -25,10 +30,10 @@
 // ==/UserScript==
 
 /*
- * Weibo Retro Twitter-Style Clone
+ * Pynseq for Weibo｜屏序·微博
  * Copyright (c) 2025 DanielZenFlow
  * Licensed under MIT License
- * GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)
+ * GitHub: [DanielZenFlow/Pynseq-Weibo](https://github.com/DanielZenFlow/Pynseq-Weibo)
  */
 
 (function () {
@@ -36,6 +41,12 @@
 
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
+  const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
+  const SCRIPT_VERSION = '2.0.5';
+  const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
+  const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
+  const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
+  const STAR_REMINDER_DISABLED_KEY = 'WB_FULL_STAR_REMINDER_DISABLED';
   const WB_CONFIG_KEY = 'cfg';
   const WB_CONFIG_BACKUP_KEY = 'cfg_recovery_backup';
   const WB_CONFIG_SCHEMA_VERSION = 1;
@@ -80,12 +91,39 @@
   let wbConfigCacheSignature = null;
   let wbConfigCacheValue = null;
 
+  function isUnsafeObjectKey(key) {
+    return key === '__proto__' || key === 'prototype' || key === 'constructor';
+  }
+
+  function defineSafeEnumerableValue(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+  }
+
+  function copySafeEnumerableData(source) {
+    const target = {};
+    if (!source || typeof source !== 'object') return target;
+    Object.keys(source).forEach((key) => {
+      if (isUnsafeObjectKey(key)) return;
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        return;
+      }
+      defineSafeEnumerableValue(target, key, descriptor.value);
+    });
+    return target;
+  }
+
   function normalizeStoredConfig(rawCfg) {
     const raw =
       rawCfg && typeof rawCfg === 'object' && !Array.isArray(rawCfg)
         ? rawCfg
         : {};
-    const normalized = Object.assign({}, raw);
+    const normalized = copySafeEnumerableData(raw);
     const storedSchema = Number(raw.schemaVersion);
 
     if (raw.hideNavVideoRecommend === true) {
@@ -363,8 +401,6 @@
   (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '2.0.0';
-
   // === GM_* 接口封装 ===
   const _GM_getValue =
     typeof GM_getValue !== 'undefined' ? GM_getValue : () => {};
@@ -380,10 +416,6 @@
     typeof GM_removeValueChangeListener !== 'undefined'
       ? GM_removeValueChangeListener
       : null;
-  const _GM_registerMenuCommand =
-    typeof GM_registerMenuCommand !== 'undefined'
-      ? GM_registerMenuCommand
-      : () => {};
   const _GM_openInTab =
     typeof GM_openInTab !== 'undefined' ? GM_openInTab : null;
 
@@ -403,38 +435,39 @@
         justify-content: center;
         padding: 20px;
         box-sizing: border-box;
-        background: rgba(0, 0, 0, .46);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: rgba(30, 25, 21, .46);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .wb-retro-confirm-dialog {
-        width: min(420px, calc(100vw - 40px));
+        width: min(430px, calc(100vw - 32px));
         box-sizing: border-box;
-        padding: 22px;
+        padding: 24px;
         color-scheme: light;
-        color: #171717;
-        background: #fff;
-        border: 1px solid rgba(0, 0, 0, .08);
-        border-radius: 14px;
-        box-shadow: 0 24px 70px rgba(0, 0, 0, .3);
+        color: #27231f;
+        background: #f7f3ee;
+        border: 1px solid #cfc5bb;
+        border-radius: 0;
+        box-shadow: 0 18px 60px rgba(45, 35, 28, .3);
       }
       .wb-retro-confirm-title {
         margin: 0 0 10px;
-        font-size: 17px;
+        color: #655d56;
+        font-size: 19px;
         line-height: 1.4;
-        font-weight: 650;
+        font-weight: 700;
       }
       .wb-retro-confirm-message {
         margin: 0;
-        color: #64646c;
+        color: #655d56;
         font-size: 13px;
-        line-height: 1.65;
+        line-height: 1.6;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
         max-height: min(58vh, 460px);
         padding-right: 4px;
         overflow-y: auto;
         scrollbar-width: thin;
-        scrollbar-color: #b7b7bd transparent;
+        scrollbar-color: #c8b9aa transparent;
       }
       .wb-retro-confirm-message::-webkit-scrollbar {
         width: 8px;
@@ -443,7 +476,7 @@
         background: transparent;
       }
       .wb-retro-confirm-message::-webkit-scrollbar-thumb {
-        background: #b7b7bd;
+        background: #c8b9aa;
         border: 2px solid transparent;
         border-radius: 999px;
         background-clip: padding-box;
@@ -453,7 +486,7 @@
         align-items: center;
         gap: 4px;
         margin-top: 14px;
-        color: #315efb;
+        color: #a84e34;
         font-size: 13px;
         line-height: 1.4;
         text-decoration: none;
@@ -465,63 +498,29 @@
         display: flex;
         justify-content: flex-end;
         gap: 9px;
-        margin-top: 20px;
+        margin-top: 22px;
       }
       .wb-retro-confirm-button {
-        min-width: 72px;
-        padding: 8px 13px;
-        border: 1px solid #dedee3;
-        border-radius: 8px;
-        color: #242424;
-        background: #fff;
+        padding: 8px 12px;
+        border: 1px solid #cfc5bb;
+        border-radius: 0;
+        color: #2d2824;
+        background: #eee7df;
         font: 500 13px/1.3 inherit;
         cursor: pointer;
       }
       .wb-retro-confirm-button:hover {
-        background: #f5f5f7;
+        background: #e4dad0;
       }
       .wb-retro-confirm-button.is-primary {
-        border-color: #202020;
+        border-color: #b85f43;
         color: #fff;
-        background: #202020;
+        background: #c96849;
       }
       .wb-retro-confirm-button.is-danger {
-        border-color: #c9362b;
-        color: #fff;
-        background: #c9362b;
-      }
-      @media (prefers-color-scheme: dark) {
-        .wb-retro-confirm-dialog {
-          color-scheme: dark;
-          color: #f1f1f1;
-          background: #202020;
-          border-color: rgba(255, 255, 255, .12);
-        }
-        .wb-retro-confirm-message {
-          color: #aaaab2;
-          scrollbar-color: #66666d transparent;
-        }
-        .wb-retro-confirm-message::-webkit-scrollbar-thumb {
-          background: #66666d;
-          border-color: transparent;
-          background-clip: padding-box;
-        }
-        .wb-retro-confirm-link {
-          color: #8eabff;
-        }
-        .wb-retro-confirm-button {
-          color: #f1f1f1;
-          background: #29292c;
-          border-color: #424247;
-        }
-        .wb-retro-confirm-button:hover {
-          background: #343438;
-        }
-        .wb-retro-confirm-button.is-primary {
-          color: #171717;
-          background: #f1f1f1;
-          border-color: #f1f1f1;
-        }
+        border-color: #c89483;
+        color: #a43f2e;
+        background: #eee7df;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -642,65 +641,30 @@
     const style = document.createElement('style');
     style.id = 'wb-retro-notice-style';
     style.textContent = `
-      .wb-retro-notice-stack {
+      #wb-retro-toast {
         position: fixed;
-        top: 18px;
         left: 50%;
-        z-index: 1000002;
-        display: flex;
-        width: min(440px, calc(100vw - 32px));
-        flex-direction: column;
-        gap: 8px;
-        transform: translateX(-50%);
-        pointer-events: none;
-      }
-      .wb-retro-notice {
+        top: 50%;
+        bottom: auto;
+        z-index: 2147483647;
         box-sizing: border-box;
-        width: 100%;
-        padding: 11px 36px 11px 14px;
-        border: 1px solid rgba(0, 0, 0, .1);
-        border-left: 4px solid #1b74e4;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, .97);
-        color: #222;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
-        font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        width: min(215px, calc(100vw - 32px));
+        padding: 12px 14px;
+        transform: translate(-50%, -50%);
+        border: 1px solid #cfc5bb;
+        border-radius: 0;
+        background: #f7f3ee;
+        box-shadow: 0 10px 34px rgba(45, 35, 28, .24);
+        color: #27231f;
+        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-align: center;
         white-space: pre-line;
         overflow-wrap: anywhere;
-        pointer-events: auto;
-        animation: wb-retro-notice-in .16s ease-out;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity .16s ease;
       }
-      .wb-retro-notice.is-success { border-left-color: #168647; }
-      .wb-retro-notice.is-error { border-left-color: #c9362b; }
-      .wb-retro-notice.is-info { border-left-color: #1b74e4; }
-      .wb-retro-notice-close {
-        position: absolute;
-        top: 7px;
-        right: 9px;
-        width: 24px;
-        height: 24px;
-        padding: 0;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        color: inherit;
-        cursor: pointer;
-        font: 18px/24px Arial, sans-serif;
-        opacity: .62;
-      }
-      .wb-retro-notice-close:hover { background: rgba(0, 0, 0, .07); opacity: 1; }
-      @keyframes wb-retro-notice-in {
-        from { opacity: 0; transform: translateY(-6px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      @media (prefers-color-scheme: dark) {
-        .wb-retro-notice {
-          border-color: rgba(255, 255, 255, .13);
-          background: rgba(35, 35, 35, .97);
-          color: #f1f1f1;
-        }
-        .wb-retro-notice-close:hover { background: rgba(255, 255, 255, .1); }
-      }
+      #wb-retro-toast.is-visible { opacity: 1; }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -708,33 +672,24 @@
   function showNotification(message, options = {}) {
     const mount = () => {
       ensureNotificationStyles();
-      let stack = document.querySelector('.wb-retro-notice-stack');
-      if (!stack) {
-        stack = document.createElement('div');
-        stack.className = 'wb-retro-notice-stack';
-        stack.setAttribute('role', 'status');
-        stack.setAttribute('aria-live', 'polite');
-        (document.body || document.documentElement).appendChild(stack);
+      let toast = document.getElementById('wb-retro-toast');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'wb-retro-toast';
+        toast.setAttribute('role', options.type === 'error' ? 'alert' : 'status');
+        toast.setAttribute('aria-live', 'polite');
+        (document.body || document.documentElement).appendChild(toast);
       }
-
-      const notice = document.createElement('div');
-      notice.className = `wb-retro-notice is-${options.type || 'info'}`;
-      notice.style.position = 'relative';
-      notice.textContent = String(message || '');
-
-      const close = document.createElement('button');
-      close.type = 'button';
-      close.className = 'wb-retro-notice-close';
-      close.setAttribute('aria-label', '关闭通知');
-      close.textContent = '×';
-      const dismiss = () => notice.remove();
-      close.addEventListener('click', dismiss);
-      notice.appendChild(close);
-      stack.appendChild(notice);
-
-      const duration = Math.max(1500, Number(options.duration) || 3600);
-      setTimeout(dismiss, duration);
-      return notice;
+      toast.textContent = String(message || '');
+      toast.setAttribute('role', options.type === 'error' ? 'alert' : 'status');
+      toast.classList.add('is-visible');
+      clearTimeout(showNotification.timer);
+      const duration = Math.max(1500, Number(options.duration) || 2400);
+      showNotification.timer = setTimeout(
+        () => toast?.classList.remove('is-visible'),
+        duration
+      );
+      return toast;
     };
 
     if (document.documentElement) return mount();
@@ -746,8 +701,7 @@
 
   // === Star提醒配置 ===
   const STAR_CONFIG = {
-    FIRST_RUN_KEY: 'WB_FULL_FIRST_RUN',
-    STAR_REMINDER_DISABLED_KEY: 'WB_FULL_STAR_REMINDER_DISABLED',
+    STAR_REMINDER_DISABLED_KEY,
     LAST_STAR_REMINDER_TIME_KEY: 'WB_FULL_LAST_STAR_REMINDER_TIME',
     STAR_REMINDER_STAGE_KEY: 'WB_FULL_STAR_REMINDER_STAGE',
     // Star提醒间隔：首次安装 → 7天后 → 30天后 → 90天后 → 不再提醒
@@ -756,8 +710,7 @@
 
   // === 智能打开链接函数 ===
   function openGitHub() {
-    const url =
-      'https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone';
+    const url = GITHUB_URL;
 
     // 优先使用油猴的专用API（不会被拦截）
     if (_GM_openInTab) {
@@ -855,7 +808,7 @@
   async function showStarReminder(intervalIndex) {
     const isFirstTime = intervalIndex === 0;
     const message = isFirstTime
-      ? '🎉 感谢使用 Weibo Retro Twitter-Style Clone！\n\n如果这个工具对您有帮助，请考虑给我们点个 ⭐ Star！'
+      ? `🎉 感谢使用 ${SCRIPT_NAME}！\n\n如果这个工具对您有帮助，请考虑给项目点个 ⭐ Star！`
       : '⭐ 再次感谢使用我们的工具！\n\n如果觉得有用，请考虑给项目点个 Star 支持一下！';
 
     const result = await showCenteredConfirm({
@@ -893,50 +846,6 @@
       // 非首次提醒，用户选择取消就不再提醒
       _GM_setValue(STAR_CONFIG.STAR_REMINDER_DISABLED_KEY, true);
     }
-  }
-
-  // === 首次运行检查 ===
-  function checkFirstRun() {
-    if (!canUseSettingApi()) return false;
-
-    const isFirstRun = !_GM_getValue(STAR_CONFIG.FIRST_RUN_KEY, false);
-
-    if (isFirstRun) {
-      setTimeout(async () => {
-        const shouldSync = await showCenteredConfirm({
-          title: '欢迎使用',
-          message:
-            '首次使用建议同步完整的新浪微博官方黑名单，并合并到本地屏蔽列表。\n\n这个过程可能需要几分钟。',
-          confirmText: '立即同步',
-          cancelText: '稍后处理',
-        });
-
-        if (shouldSync) {
-          // 调用全量同步（这里使用现有的全量同步函数）
-          (async () => {
-            try {
-              const oldSize = BL.size;
-              const newSize = await WB_BL_SYNC_BRIDGE.fullSync();
-              showNotification(
-                `🎉 新浪微博官方黑名单同步完成！本地屏蔽列表现有 ${newSize} 个用户（新增 ${
-                  newSize - oldSize
-                }）`,
-                { type: 'success', duration: 5000 }
-              );
-            } catch (error) {
-              showNotification('❌ 新浪微博官方黑名单同步失败，请稍后手动同步', {
-                type: 'error',
-              });
-              console.error('First run sync error:', error);
-            }
-          })();
-        }
-      }, 2000);
-
-      _GM_setValue(STAR_CONFIG.FIRST_RUN_KEY, true);
-      return true;
-    }
-    return false;
   }
 
   // 读取时间线默认设置（不再创建油猴菜单，统一在设置面板管理）
@@ -1047,9 +956,8 @@
     '.wbset-panel',
     '.wbset-btn',
     '.wb-user-context-menu',
-    '.wb-user-context-toast',
     '.wb-retro-confirm-overlay',
-    '.wb-retro-notice-stack',
+    '#wb-retro-toast',
   ].join(',');
   const RELATIONSHIP_PAGE_ATTR = 'data-__wb_relationship_list_page';
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
@@ -1672,54 +1580,6 @@
   });
   WB_INTERNAL.blSync = WB_BL_SYNC_BRIDGE;
 
-  function getDiagnosticPageType() {
-    const path = location.pathname || '/';
-    if (location.hostname === 's.weibo.com') {
-      return /^\/weibo(?:\/|$)/.test(path) ? 'search-results' : 'search-home';
-    }
-    if (path === '/') return 'home';
-    if (/^\/mygroups(?:\/|$)/.test(path)) return 'latest-timeline';
-    if (/^\/set(?:\/|$)/.test(path)) return 'weibo-settings';
-    if (/^\/(?:u\/)?\d{5,}(?:\/|$)/.test(path)) return 'user-profile';
-    return 'other';
-  }
-
-  WB_INTERNAL.getDiagnostics = () => {
-    const config = WB_INTERNAL.config.read();
-    return {
-      script: {
-        version: SCRIPT_VERSION,
-        generatedAt: new Date().toISOString(),
-        host: location.hostname,
-        pageType: getDiagnosticPageType(),
-      },
-      config: {
-        schemaVersion: Number(config.schemaVersion) || 0,
-        expectedSchemaVersion: WB_INTERNAL.config.schemaVersion,
-        migrations: WB_RUNTIME_METRICS.config.migrations,
-        recoveries: WB_RUNTIME_METRICS.config.recoveries,
-        futureSchema: WB_RUNTIME_METRICS.config.futureSchema,
-      },
-      localBlockList: {
-        cachedUIDs: BL.size,
-        localExclusions: readLocalBLExclusions().size,
-        sync: getPublicSyncState(),
-      },
-      relay: { ...WB_RUNTIME_METRICS.relay },
-      dom: WB_INTERNAL.dom.getStats(),
-      virtualScroller: VIRTUAL_COMPACTION_RUNTIME.getStats(),
-      capabilities: {
-        valueChangeListener: !!(
-          _GM_addValueChangeListener && _GM_removeValueChangeListener
-        ),
-        openInTab: !!_GM_openInTab,
-        fetch: typeof window.fetch === 'function',
-        xhr: typeof XMLHttpRequest === 'function',
-        webSocket: typeof WebSocket === 'function',
-      },
-    };
-  };
-
   (async () => {
     syncRelationshipPageMode();
     BL = readLocalBLCache();
@@ -1739,9 +1599,8 @@
     });
     scheduleBlockedDOMRefreshWhenPageReady();
 
-    // 首次运行先完成同步提示，避免与 Star 提醒连续弹出。
-    const firstRunPromptScheduled = checkFirstRun();
-    if (!firstRunPromptScheduled) checkStarReminder();
+    // 首次使用先完成设置向导，避免和 Star 提醒重叠。
+    if (_GM_getValue(ONBOARDING_DONE_KEY, false)) checkStarReminder();
   })();
 
   function generateCSSRules() {
@@ -2127,8 +1986,14 @@
     const out = {};
     context.seen.set(obj, out);
     for (const [key, value] of Object.entries(obj)) {
+      if (isUnsafeObjectKey(key)) {
+        context.changed = true;
+        continue;
+      }
       const nestedCategory = getNestedBlacklistCategory(key, responseCategory);
-      out[key] =
+      defineSafeEnumerableValue(
+        out,
+        key,
         value && typeof value === 'object'
           ? filterContentTree(
               value,
@@ -2137,7 +2002,8 @@
               context,
               depth + 1
             )
-          : value;
+          : value
+      );
     }
     return out;
   }
@@ -2249,7 +2115,7 @@
     const displayTotal = Number(data.display_total_number);
     if (!Number.isFinite(displayTotal) || displayTotal < 0) return data;
 
-    const normalized = Object.assign({}, data);
+    const normalized = copySafeEnumerableData(data);
     normalized.total_number = displayTotal;
     return normalized;
   }
@@ -2948,6 +2814,21 @@
     return nodes.some((node) => !isInsideCommentContentRoot(node));
   }
 
+  const COMMENT_SURFACE_SELECTOR = [
+    '.wbpro-list',
+    '[class*="Comment_"]',
+    '[class*="comment_"]',
+    '[class*="comment-"]',
+    '[data-testid*="comment"]',
+    '[aria-label*="评论"]',
+    '[action-type*="comment"]',
+    '[node-type*="comment"]',
+  ].join(',');
+
+  function isInsideCommentSurface(el) {
+    return el instanceof Element && !!el.closest(COMMENT_SURFACE_SELECTOR);
+  }
+
   function findCommentRootForUID(el, uid) {
     if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
       return null;
@@ -2967,6 +2848,9 @@
     ) {
       return markCommentRoot(explicit);
     }
+    // 首页微博作者栏与评论项使用相似的 flex 结构。没有明确评论区域
+    // 上下文时，禁止把昵称栏逐层提升成“评论容器”。
+    if (!isInsideCommentSurface(el)) return null;
 
     let fallback = null;
     let cur = el.parentElement;
@@ -4328,8 +4212,13 @@
       restoreHiddenRelationshipItems(document);
     } else {
       const post = ctx.root || findContentRootForUID(ctx.source, ctx.uid);
+      let hiddenImmediately = false;
       if (shouldHideBlacklistDOMRoot(post)) {
-        hideContentRoot(post, ctx.uid);
+        hiddenImmediately = hideContentRoot(post, ctx.uid);
+      }
+      if (hiddenImmediately) {
+        compactVirtualScrollerGaps(document);
+        nudgeTimelineLayout();
       }
       if (
         CONTENT_FILTER_CFG.hideBlacklistComments &&
@@ -4672,22 +4561,6 @@
         margin: 5px 6px;
         background: rgba(0,0,0,.1);
       }
-      .wb-user-context-toast {
-        position: fixed;
-        left: 50%;
-        bottom: 28px;
-        z-index: 1000001;
-        transform: translateX(-50%);
-        padding: 9px 12px;
-        display: none;
-        max-width: min(360px, 88vw);
-        background: rgba(17,17,17,.92);
-        color: #fff;
-        border-radius: 999px;
-        font-size: 13px;
-        line-height: 1.4;
-        box-shadow: 0 8px 24px rgba(0,0,0,.22);
-      }
     `);
   }
 
@@ -4696,7 +4569,6 @@
   function initUserContextMenu() {
     injectUserContextMenuCSS();
     let activeCtx = null;
-    let toastTimer = null;
     let menuOpenedAt = 0;
     let lastViewportWidth = window.innerWidth;
     let lastViewportHeight = window.innerHeight;
@@ -4785,20 +4657,8 @@
       activeCtx = null;
     };
 
-    showUserContextToastImpl = (message) => {
-      let toast = document.querySelector('.wb-user-context-toast');
-      if (!toast) {
-        toast = document.createElement('div');
-        toast.className = 'wb-user-context-toast';
-        (document.body || document.documentElement).appendChild(toast);
-      }
-      toast.textContent = message;
-      toast.style.display = 'block';
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => {
-        toast.style.display = 'none';
-      }, 1800);
-    };
+    showUserContextToastImpl = (message) =>
+      showNotification(message, { type: 'success' });
 
     const handleContextMenu = (e) => {
       const nameTarget = getUserNameContextTarget(e.target);
@@ -5428,44 +5288,11 @@
   initUserContextMenu();
   initSearchResultBlacklistFilter();
 
-  /* === Tampermonkey 菜单（精简版） === */
-
-  // Star
-  _GM_registerMenuCommand('⭐ 给我们 Star', () => {
-    openGitHub();
-  });
-
-  // 关于
-  _GM_registerMenuCommand('ℹ️ 关于', () => {
-    const isDisabled = _GM_getValue(
-      STAR_CONFIG.STAR_REMINDER_DISABLED_KEY,
-      false
-    );
-    const starStatus = isDisabled ? '🔕 Star提醒已关闭' : '🔔 Star提醒已开启';
-
-    showCenteredConfirm({
-      title: '关于',
-      message:
-        `Weibo Retro Twitter-Style Clone v${SCRIPT_VERSION}\n` +
-        `模仿早期Twitter时间线的完整版微博增强工具\n\n` +
-        `当前缓存: ${BL.size} 个用户\n` +
-        `${starStatus}\n\n` +
-        `作者: DanielZenFlow\n` +
-        `许可: MIT License\n\n` +
-        `感谢使用！如果有帮助请给我们 Star ⭐`,
-      linkText: 'GitHub 项目主页',
-      linkURL:
-        'https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone',
-      confirmText: '关闭',
-      hideCancel: true,
-    });
-  });
-
   console.log(
-    `[WB-BL] 启动完成 v${SCRIPT_VERSION} @ ${location.hostname}，已缓存 ${BL.size} UIDs`
+    `[WB-BL] ${SCRIPT_NAME} v${SCRIPT_VERSION} @ ${location.hostname}，已缓存 ${BL.size} UIDs`
   );
   console.log(
-    `[WB-BL] Author: DanielZenFlow | GitHub: [DanielZenFlow/Weibo-Retro-Twitter-Style-Clone](https://github.com/DanielZenFlow/Weibo-Retro-Twitter-Style-Clone)`
+    `[WB-BL] Author: DanielZenFlow | GitHub: ${GITHUB_URL}`
   );
 })();
 
@@ -5574,14 +5401,22 @@
       .filter((s) => /^\d{5,}$/.test(s));
   }
 
+  function exportFilename(date = new Date()) {
+    const pad = (value) => String(value).padStart(2, '0');
+    const timestamp =
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+      `T${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+    return `pynseq-for-weibo-blocklist-${timestamp}.json`;
+  }
+
   // 导出本地屏蔽列表备份为 JSON 文件
   function exportBlacklist() {
     const blSet = readBLSet();
     const uids = Array.from(blSet);
     const exportData = {
       exportTime: new Date().toISOString(),
-      version: '2.0.0',
-      scriptName: 'Weibo Retro Twitter-Style Clone',
+      version: SCRIPT_VERSION,
+      scriptName: SCRIPT_NAME,
       count: uids.length,
       uids: uids,
     };
@@ -5590,7 +5425,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `weibo-local-block-list-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = exportFilename();
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -6291,14 +6126,10 @@
     .wbset-setting:last-child{border-bottom:0}.wbset-setting:hover{background:color-mix(in srgb,var(--wbset-sidebar) 58%,transparent)}
     .wbset-setting-copy{min-width:0;display:grid;gap:3px}.wbset-setting-copy strong{font-size:13px;font-weight:560}.wbset-setting-copy span{font-size:12px;line-height:1.45;color:var(--wbset-muted)}
     .wbset-setting input[type="checkbox"]{position:absolute;opacity:0;pointer-events:none}
-    .wbset-switch{position:relative;flex:0 0 auto;width:34px;height:20px;border-radius:999px;background:#c9c9cf;transition:.16s ease}
-    .wbset-switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.16s ease}
-    .wbset-setting input:checked + .wbset-switch{background:#202020}.wbset-setting input:checked + .wbset-switch::after{transform:translateX(14px)}
     .wbset-row{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:12px 15px}.wbset-row + .wbset-row{padding-top:0}
     .wbset-row textarea{width:100%;min-height:68px;box-sizing:border-box;resize:vertical;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-sm);background:var(--wbset-bg);color:var(--wbset-text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
     .wbset-input{box-sizing:border-box;padding:9px 10px;border:1px solid var(--wbset-border);border-radius:var(--wbset-radius-sm);background:var(--wbset-bg);color:var(--wbset-text);font:13px/1.3 inherit;outline:none}.wbset-input:focus,.wbset-row textarea:focus{border-color:#8b8b94;box-shadow:0 0 0 3px rgba(127,127,138,.12)}
     .wbset-note{font-size:12px;line-height:1.5;color:var(--wbset-muted)}
-    .wbset-diagnostics{min-height:190px;white-space:pre;tab-size:2}
     .wbset-sync-status{min-height:18px}.wbset-sync-status.is-active{color:var(--wbset-text);font-weight:550}
     .wbset-ftr{min-height:64px;padding:0 20px;border-top:1px solid var(--wbset-border);display:flex;gap:9px;align-items:center;justify-content:flex-end}
     .wbset-btn2{border:1px solid transparent;border-radius:var(--wbset-radius-sm);padding:8px 12px;background:var(--wbset-hover);color:var(--wbset-text);font:500 13px/1.2 inherit;cursor:pointer}
@@ -6309,8 +6140,194 @@
     .wbset-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;padding-top:13px}.wbset-pagination > span{min-width:110px;text-align:center;font-size:12px;color:var(--wbset-muted)}.wbset-page-jump{display:flex}.wbset-page-jump .wbset-input{width:74px;border-radius:var(--wbset-radius-sm) 0 0 var(--wbset-radius-sm)}.wbset-page-jump .wbset-btn2{border-radius:0 var(--wbset-radius-sm) var(--wbset-radius-sm) 0;white-space:nowrap}.wbset-btn2:disabled{opacity:.42;cursor:not-allowed;filter:none}
     .wbset-empty{padding:34px 18px;text-align:center;color:var(--wbset-muted);font-size:13px}
     .danger-zone{border-color:rgba(201,54,43,.45);background:rgba(201,54,43,.035)}
-    @media (prefers-color-scheme:dark){.wbset-btn{border-color:rgba(255,255,255,.12);background:rgba(35,35,35,.94);color:#f1f1f1}.wbset-btn:hover{background:#303030}.wbset-panel{--wbset-bg:#202020;--wbset-sidebar:#181818;--wbset-text:#f1f1f1;--wbset-muted:#aaaab2;--wbset-border:#36363a;--wbset-hover:#303034;--wbset-accent:#f1f1f1}.wbset-btn2.primary{color:#171717}.wbset-setting input:checked + .wbset-switch{background:#ededed}.wbset-switch::after{background:#fff}}
     @media (max-width:720px){.wbset-panel{padding:10px}.wbset-card{width:100%;height:94vh}.wbset-shell{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.wbset-nav{display:flex;gap:4px;padding:8px;overflow:auto;border-right:0;border-bottom:1px solid var(--wbset-border)}.wbset-nav button{width:auto;white-space:nowrap}.wbset-content{padding:20px 16px 28px}.wbset-manager-tools{grid-template-columns:1fr}.wbset-uid-item{grid-template-columns:1fr auto}.wbset-uid-link{display:none}.wbset-stats{flex-direction:column}}
+
+    html:has(.wbset-panel[style*="display: flex"]) .wbset-btn,
+    html:has(#wbset-onboarding-overlay) .wbset-btn{display:none!important}
+    .wbset-panel{
+      z-index:2147483646!important;padding:24px!important;
+      background:rgba(27,23,20,.52)!important;backdrop-filter:blur(4px)!important;
+      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;color:#27231f!important
+    }
+    .wbset-card{
+      width:min(940px,95vw)!important;height:min(690px,88vh)!important;
+      grid-template-rows:56px minmax(0,1fr) 56px!important;
+      border:1px solid #c9beb2!important;border-radius:0!important;
+      outline:1px solid rgba(255,255,255,.32)!important;outline-offset:-2px!important;
+      background:#f6f1eb!important;box-shadow:0 30px 90px rgba(35,28,23,.38)!important;color:#27231f!important
+    }
+    .wbset-card *{box-sizing:border-box!important}
+    .wbset-hdr{min-height:56px!important;padding:0 24px!important;border-bottom:1px solid #d5cbc1!important;background:#faf6f1!important}
+    .wbset-title{display:grid!important;gap:1px!important}
+    .wbset-title strong{font-size:15px!important;font-weight:720!important;letter-spacing:-.01em!important}
+    .wbset-version{color:#8b8178!important;font-size:9px!important;line-height:1.15!important;letter-spacing:.04em!important}
+    .wbset-shell{grid-template-columns:178px minmax(0,1fr)!important}
+    .wbset-nav{
+      padding:18px 10px!important;overflow:auto!important;border-right:1px solid #d5cbc1!important;
+      background:#ebe4dc!important;display:flex!important;flex-direction:column!important
+    }
+    .wbset-nav-pages{flex:0 0 auto!important}
+    .wbset-nav button{
+      width:100%!important;min-height:34px!important;margin:1px 0!important;padding:8px 11px!important;
+      border:1px solid transparent!important;border-radius:0!important;background:transparent!important;
+      color:#6d655e!important;font-family:inherit!important;font-size:11.5px!important;
+      font-weight:800!important;line-height:1.3!important;text-align:left!important
+    }
+    .wbset-nav button:hover{background:rgba(217,119,87,.075)!important;color:#27231f!important}
+    .wbset-nav button.is-active{
+      border-color:#d7cabd!important;background:#fbf8f4!important;
+      box-shadow:inset 3px 0 #c96849!important;color:#27231f!important
+    }
+    .wbset-content{
+      min-width:0!important;overflow:auto!important;padding:24px 28px 30px!important;
+      background:#f6f1eb!important;scrollbar-color:#c8b9aa transparent!important
+    }
+    .wbset-page-head{margin-bottom:18px!important}
+    .wbset-page-head h3,.wbset-about-hero h3{
+      font:600 22px/1.22 Georgia,"Songti SC","STSong",serif!important;letter-spacing:-.015em!important
+    }
+    .wbset-page-head h3{margin:0 0 5px!important}
+    .wbset-page-head p{margin:0!important;color:#7c7269!important;font-size:12px!important}
+    .wbset-sec{
+      margin-bottom:14px!important;overflow:hidden!important;border:1px solid #ddd3c9!important;
+      border-radius:0!important;background:#fffaf5!important;box-shadow:0 1px 0 rgba(64,49,38,.025)!important
+    }
+    .wbset-sec-title{
+      padding:10px 14px 9px!important;border-bottom:1px solid #e2d9d0!important;background:#f8f2eb!important;
+      color:#4a423b!important;font-size:12px!important;font-weight:700!important;letter-spacing:.01em!important
+    }
+    .wbset-setting{
+      position:relative!important;display:flex!important;align-items:center!important;justify-content:space-between!important;
+      gap:20px!important;padding:12px 14px!important;border-bottom:1px solid #e8dfd6!important
+    }
+    .wbset-setting:hover{background:rgba(217,119,87,.055)!important}
+    .wbset-setting-copy{min-width:0!important;display:grid!important;gap:3px!important}
+    .wbset-setting-copy strong{font-size:12.5px!important;font-weight:660!important}
+    .wbset-setting-copy span{color:#7c7269!important;font-size:11.5px!important;line-height:1.45!important}
+    .wbset-setting input[type="checkbox"],.wbset-onboard-option input[type="checkbox"]{
+      position:static!important;flex:0 0 auto!important;width:17px!important;height:17px!important;margin:0!important;
+      opacity:1!important;pointer-events:auto!important;border-radius:0!important;accent-color:#c96849!important;cursor:pointer!important
+    }
+    .wbset-action-row{
+      min-height:56px!important;display:flex!important;align-items:center!important;justify-content:space-between!important;
+      gap:20px!important;padding:10px 14px!important
+    }
+    .wbset-action-row>span{color:#7c7269!important;font-size:11.5px!important;line-height:1.5!important}
+    .wbset-btn2{
+      min-height:30px!important;padding:6px 10px!important;border:1px solid #cfc5bb!important;border-radius:0!important;
+      background:#eee7df!important;color:#2d2824!important;font:500 12px/1.25 inherit!important
+    }
+    .wbset-btn2:hover{background:#e4dad0!important;filter:none!important}
+    .wbset-btn2.primary{border-color:#b85f43!important;background:#c96849!important;color:#fff!important}
+    .wbset-btn2.ghost{border-color:#cfc5bb!important;background:#eee7df!important}
+    .wbset-btn2.danger{border-color:#c89483!important;background:#eee7df!important;color:#a43f2e!important}
+    .wbset-btn2:disabled{opacity:.5!important;cursor:default!important}
+    .wbset-card button:focus-visible,.wbset-card input:focus-visible,.wbset-card textarea:focus-visible,.wbset-card a:focus-visible{
+      outline:2px solid rgba(184,95,67,.72)!important;outline-offset:2px!important
+    }
+    .wbset-row{gap:9px!important;padding:14px 15px!important}
+    .wbset-row+.wbset-row{padding-top:0!important}
+    .wbset-row textarea,.wbset-input{
+      border:1px solid #cfc5bb!important;border-radius:0!important;background:#fffdf9!important;color:#27231f!important;
+      padding:7px 9px!important;font-size:12px!important
+    }
+    .wbset-row textarea:focus,.wbset-input:focus{border-color:#9b6c4a!important;box-shadow:0 0 0 2px rgba(155,108,74,.12)!important}
+    .wbset-note{color:#786f67!important;font-size:12px!important;line-height:1.55!important}
+    .wbset-sync-status.is-active{color:#8f442f!important}
+    .wbset-stats{display:grid!important;grid-template-columns:repeat(2,1fr)!important;gap:10px!important;margin-bottom:16px!important;padding:0!important}
+    .wbset-stat{padding:11px 14px!important;border:1px solid #ddd3c9!important;border-radius:0!important;background:#fffaf5!important}
+    .wbset-stat span{color:#7c7269!important;font-size:11px!important}.wbset-stat strong{margin-top:3px!important;font-size:20px!important}
+    .wbset-manager-tools{grid-template-columns:minmax(160px,1fr) auto!important;gap:8px!important;margin-bottom:10px!important}
+    .wbset-uid-list{max-height:330px!important;overflow:auto!important;border:1px solid #ddd3c9!important;border-radius:0!important;background:#fffaf5!important}
+    .wbset-uid-item{
+      grid-template-columns:minmax(140px,1fr) auto auto!important;gap:14px!important;min-height:44px!important;
+      padding:0 12px!important;border-bottom:1px solid #e3dcd4!important
+    }
+    .wbset-uid-link{color:#8f442f!important}.wbset-uid-remove{color:#a43f2e!important}
+    .wbset-pagination{
+      min-height:48px!important;justify-content:flex-end!important;gap:8px!important;padding:10px 0 5px!important;
+      color:#6c6259!important;font-size:12px!important
+    }
+    .wbset-page-jump .wbset-input,.wbset-page-jump .wbset-btn2{border-radius:0!important}
+    .danger-zone{border-color:#d4a493!important;background:#fff7f1!important}
+    .wbset-ftr{
+      min-height:56px!important;padding:0 24px!important;border-top:1px solid #d5cbc1!important;
+      background:#faf6f1!important;justify-content:space-between!important
+    }
+    .wbset-footer-actions{display:flex!important;align-items:center!important;gap:9px!important}
+    .wbset-author{min-height:36px!important;display:flex!important;align-items:center!important;gap:8px!important;color:#655d56!important;font-size:12px!important;font-weight:650!important;text-decoration:none!important}
+    .wbset-author:hover{color:#a84e34!important}.wbset-author svg{width:17px!important;height:17px!important;fill:currentColor!important}
+    .wbset-about-hero{margin-bottom:16px!important;padding:22px 24px!important;border:1px solid #d8d0c7!important;background:#fbf8f4!important}
+    .wbset-about-eyebrow{color:#b75f43!important;font-size:10px!important;font-weight:750!important;letter-spacing:.12em!important}
+    .wbset-about-hero h3{margin:7px 0 8px!important}
+    .wbset-about-title-link{color:inherit!important;font-family:"Songti SC","STSong","SimSun",serif!important;text-decoration:none!important}
+    .wbset-about-title-link:hover{color:#a84e34!important}
+    .wbset-about-hero p{max-width:620px!important;margin:0!important;color:#786f67!important;font-size:13px!important;line-height:1.65!important}
+    .wbset-about-version{
+      display:inline-block!important;margin-top:14px!important;padding:3px 7px!important;border:1px solid #d8d0c7!important;
+      color:#655d56!important;font:10px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace!important
+    }
+    .wbset-about-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px!important}
+    .wbset-about-card{min-width:0!important;min-height:190px!important;display:flex!important;flex-direction:column!important;padding:18px!important;border:1px solid #d8d0c7!important;background:#fbf8f4!important}
+    .wbset-about-card h3{margin:0 0 7px!important;font-size:14px!important}.wbset-about-card p{margin:0!important;color:#786f67!important;font-size:12px!important;line-height:1.6!important}
+    .wbset-about-card-actions{min-height:36px!important;display:flex!important;flex-wrap:wrap!important;align-items:flex-end!important;gap:8px!important;margin-top:auto!important;padding-top:18px!important}
+    .wbset-support-actions{display:grid!important;grid-template-columns:minmax(0,1fr)!important;align-items:stretch!important}
+    .wbset-support-link{
+      width:100%!important;display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;align-items:center!important;
+      gap:11px!important;padding:10px 11px!important;border:1px solid #d8d0c7!important;background:#fffaf5!important;color:#443d37!important;text-decoration:none!important
+    }
+    .wbset-support-link:hover{border-color:#bd8b75!important;background:#fffdf8!important}
+    .wbset-support-icon{width:24px!important;height:24px!important;display:grid!important;place-items:center!important;overflow:hidden!important}
+    .wbset-support-icon svg,.wbset-support-icon img{width:100%!important;height:100%!important;display:block!important}
+    .wbset-support-link-copy{display:grid!important;gap:2px!important;min-width:0!important}.wbset-support-link-copy strong{font-size:12.5px!important}
+    .wbset-support-link-copy span{color:#786f67!important;font-size:10.5px!important}.wbset-support-link-action{color:#9e4d36!important;font-size:10.5px!important;font-weight:700!important;white-space:nowrap!important}
+    .wbset-star-status{margin-top:12px!important;color:#8f442f!important;font-size:12px!important;font-weight:650!important}
+    #wbset-onboarding-overlay{
+      position:fixed!important;z-index:2147483647!important;inset:0!important;display:flex!important;align-items:center!important;
+      justify-content:center!important;padding:24px!important;background:rgba(31,25,21,.46)!important;
+      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important
+    }
+    .wbset-onboard-card{
+      width:min(700px,94vw)!important;height:min(520px,86vh)!important;display:grid!important;
+      grid-template-rows:auto minmax(0,1fr) auto!important;overflow:hidden!important;border:1px solid #d8cfc2!important;
+      border-radius:0!important;background:#f5efe5!important;box-shadow:0 20px 64px rgba(45,35,28,.24)!important;color:#2d2926!important
+    }
+    .wbset-onboard-card *{box-sizing:border-box!important}
+    .wbset-onboard-top{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:18px!important;padding:16px 18px 0!important}
+    .wbset-onboard-progress{width:156px!important;display:grid!important;grid-template-columns:repeat(5,1fr)!important;gap:6px!important;padding-top:7px!important}
+    .wbset-onboard-progress span{height:3px!important;background:#d9cec1!important}.wbset-onboard-progress span.is-active{background:#d97757!important}
+    .wbset-onboard-skip{border:1px solid #d8cfc2!important;border-radius:0!important;background:#fbf8f2!important;color:#514942!important;cursor:pointer!important;padding:4px 7px!important;font:600 10px/1.2 inherit!important}
+    .wbset-onboard-body{min-height:0!important;display:flex!important;align-items:center!important;padding:24px 40px 20px!important;overflow:auto!important}
+    .wbset-onboard-step{width:min(570px,100%)!important}.wbset-onboard-kicker{margin-bottom:8px!important;color:#b75f43!important;font-size:10px!important;font-weight:750!important;letter-spacing:.12em!important}
+    .wbset-onboard-step h1{margin:0 0 12px!important;font-family:Georgia,"Songti SC","STSong",serif!important;font-size:clamp(22px,2.8vw,27px)!important;font-weight:600!important;line-height:1.3!important}
+    .wbset-onboard-step>p{max-width:540px!important;margin:0!important;color:#665d55!important;font-size:13.5px!important;line-height:1.68!important}
+    .wbset-onboard-options{display:grid!important;gap:8px!important;margin-top:18px!important}.wbset-onboard-options.is-grid{grid-template-columns:repeat(2,1fr)!important}
+    .wbset-onboard-option{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:18px!important;padding:11px 13px!important;border:1px solid #ddd4c8!important;border-radius:0!important;background:#fbf8f2!important;cursor:pointer!important}
+    .wbset-onboard-option:hover{background:#fffdf8!important}.wbset-onboard-option-copy{display:grid!important;gap:3px!important}
+    .wbset-onboard-option-copy strong{font-size:12.5px!important}.wbset-onboard-option-copy span{color:#756b62!important;font-size:11px!important;line-height:1.45!important}
+    .wbset-onboard-summary{display:grid!important;grid-template-columns:repeat(2,1fr)!important;gap:9px!important;margin-top:18px!important}
+    .wbset-onboard-summary div{padding:10px 0!important;border-top:1px solid #d9cec1!important}.wbset-onboard-summary span{display:block!important;color:#75685e!important;font-size:11px!important}
+    .wbset-onboard-summary strong{display:block!important;margin-top:5px!important;font-size:14px!important}
+    .wbset-onboard-supports{display:grid!important;gap:9px!important;margin-top:18px!important}
+    .wbset-onboard-link{width:100%!important;display:grid!important;grid-template-columns:auto minmax(0,1fr) auto!important;align-items:center!important;gap:13px!important;padding:15px 16px!important;border:1px solid #d3c8bc!important;border-radius:0!important;background:#fbf8f2!important;color:#443a32!important;cursor:pointer!important;text-align:left!important}
+    .wbset-onboard-link:hover{background:#fffdf8!important;border-color:#bd8b75!important}.wbset-onboard-link>svg{width:24px!important;height:24px!important;fill:currentColor!important}
+    .wbset-onboard-link-copy{min-width:0!important;display:grid!important;gap:3px!important}.wbset-onboard-link-copy strong{font-size:14px!important}.wbset-onboard-link-copy span{color:#756b62!important;font-size:11px!important;line-height:1.45!important}
+    .wbset-onboard-link-action{color:#9e4d36!important;font-size:12px!important;font-weight:700!important;white-space:nowrap!important}
+    .wbset-onboard-footer{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;padding:0 18px 22px 40px!important}
+    .wbset-onboard-step-label{color:#756b62!important;font-size:11px!important}.wbset-onboard-actions{display:flex!important;gap:9px!important;margin-left:auto!important}
+    .wbset-onboard-button{border:1px solid rgba(75,58,47,.3)!important;border-radius:0!important;background:rgba(255,252,246,.62)!important;color:#443a32!important;cursor:pointer!important;padding:8px 15px!important;font:650 12px/1.2 inherit!important}
+    .wbset-onboard-button.primary{border-color:#bf6448!important;background:#d97757!important;color:#fffaf4!important}
+    @media(max-width:720px){
+      .wbset-panel,#wbset-onboarding-overlay{padding:10px!important}.wbset-card{width:100%!important;height:94vh!important}
+      .wbset-shell{grid-template-columns:1fr!important;grid-template-rows:auto minmax(0,1fr)!important}
+      .wbset-nav{display:block!important;padding:8px!important;overflow-x:auto!important;border-right:0!important;border-bottom:1px solid #d8d0c7!important}
+      .wbset-nav-pages{width:max-content!important;display:flex!important;gap:4px!important}.wbset-nav button{width:auto!important;white-space:nowrap!important}
+      .wbset-nav button.is-active{box-shadow:inset 0 -2px #c96849!important}.wbset-content{padding:22px 16px 28px!important}
+      .wbset-onboard-card{width:100%!important;height:min(560px,92vh)!important}.wbset-onboard-body{align-items:flex-start!important;padding:28px 20px 20px!important}
+      .wbset-onboard-card[data-step="0"] .wbset-onboard-body{align-items:center!important}.wbset-onboard-footer{padding:0 18px 18px 20px!important}
+      .wbset-onboard-options.is-grid,.wbset-onboard-summary,.wbset-about-grid{grid-template-columns:1fr!important}
+      .wbset-manager-tools{grid-template-columns:1fr!important}.wbset-uid-item{grid-template-columns:1fr auto!important}.wbset-uid-link{display:none!important}
+    }
     `;
     const s = document.createElement('style');
     s.id = 'wbset-style';
@@ -6318,7 +6335,326 @@
     (document.head || document.documentElement).appendChild(s);
   }
 
-  function openPanel() {
+  function githubIconMarkup() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.52-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.38.97.1-.75.41-1.27.74-1.56-2.57-.29-5.27-1.29-5.27-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.4-2.71 5.38-5.29 5.67.42.36.79 1.06.79 2.14v3.17c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>`;
+  }
+
+  function buyMeACoffeeIconMarkup() {
+    return `<span class="wbset-support-icon" aria-hidden="true"><img src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg" alt=""></span>`;
+  }
+
+  function openExternalTab(url) {
+    if (typeof GM_openInTab === 'function') {
+      try {
+        GM_openInTab(url, { active: true, insert: true, setParent: true });
+        return;
+      } catch (error) {
+        console.warn('[WB-SETTINGS] GM_openInTab failed', error);
+      }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  function openProjectGitHub() {
+    openExternalTab(GITHUB_URL);
+  }
+
+  function openBuyMeACoffee() {
+    openExternalTab(BUY_ME_A_COFFEE_URL);
+  }
+
+  function renderStarReminderStatus(panel) {
+    const disabled = !!GM_getValue(STAR_REMINDER_DISABLED_KEY, false);
+    const status = panel?.querySelector('#wbset-star-status');
+    const toggle = panel?.querySelector('#wbset-star-toggle');
+    if (status) status.textContent = disabled ? 'Star 提醒已关闭' : 'Star 提醒已开启';
+    if (toggle) toggle.textContent = disabled ? '重新开启提醒' : '关闭提醒';
+  }
+
+  function toggleStarReminder(panel) {
+    const nextDisabled = !GM_getValue(STAR_REMINDER_DISABLED_KEY, false);
+    GM_setValue(STAR_REMINDER_DISABLED_KEY, nextDisabled);
+    renderStarReminderStatus(panel);
+  }
+
+  function isWeiboHomeTimelineRoute() {
+    return (
+      ['weibo.com', 'www.weibo.com'].includes(location.hostname) &&
+      (location.pathname === '' ||
+        location.pathname === '/' ||
+        /^\/mygroups(?:\/|$)/.test(location.pathname))
+    );
+  }
+
+  function findTimelineTab(title) {
+    const tab = document.querySelector(`[role="link"][title="${title}"]`);
+    return tab instanceof HTMLElement ? tab : null;
+  }
+
+  function isTimelineTabSelected(tab) {
+    if (!tab) return false;
+    if (
+      tab.getAttribute('aria-selected') === 'true' ||
+      tab.getAttribute('aria-current') === 'page'
+    ) {
+      return true;
+    }
+    return Array.from(tab.classList || []).some((className) =>
+      /(?:^|_)cur(?:_|$)|active|selected/i.test(className)
+    );
+  }
+
+  function openNativeHomeTimeline() {
+    const allFollowingTab = findTimelineTab('全部关注');
+    if (allFollowingTab) {
+      allFollowingTab.click();
+      WB_INTERNAL.dom.schedule(
+        'settings-native-home-fallback',
+        () => {
+          if (/^\/mygroups(?:\/|$)/.test(location.pathname)) {
+            location.assign(`${location.origin}/`);
+          }
+        },
+        800
+      );
+      return;
+    }
+    location.assign(`${location.origin}/`);
+  }
+
+  function openLatestHomeTimeline() {
+    const latestTab = findTimelineTab('最新微博');
+    if (latestTab) {
+      latestTab.click();
+      WB_INTERNAL.dom.schedule(
+        'settings-latest-home-fallback',
+        () => {
+          if (/^\/mygroups(?:\/|$)/.test(location.pathname)) return;
+          if (isTimelineTabSelected(findTimelineTab('最新微博'))) return;
+          location.assign(`${location.origin}/`);
+        },
+        800
+      );
+      return;
+    }
+    location.assign(`${location.origin}/`);
+  }
+
+  function reconcileHomeTimelineSetting(previousValue, nextValue) {
+    const previousLatestTimeline = previousValue !== false;
+    const nextLatestTimeline = nextValue !== false;
+    if (
+      previousLatestTimeline === nextLatestTimeline ||
+      !isWeiboHomeTimelineRoute()
+    ) {
+      return false;
+    }
+
+    const desiredTitle = nextLatestTimeline ? '最新微博' : '全部关注';
+    if (isTimelineTabSelected(findTimelineTab(desiredTitle))) return false;
+
+    if (nextLatestTimeline) openLatestHomeTimeline();
+    else openNativeHomeTimeline();
+    return true;
+  }
+
+  function openOnboarding({ force = false } = {}) {
+    ensureStyles();
+    if (!document.body) {
+      document.addEventListener(
+        'DOMContentLoaded',
+        () => openOnboarding({ force }),
+        { once: true }
+      );
+      return;
+    }
+    if (!force && GM_getValue(ONBOARDING_DONE_KEY, false)) return;
+    if (document.querySelector('#wbset-onboarding-overlay')) return;
+
+    let stepIndex = 0;
+    const draft = normalizeCfg(loadCfg());
+    const overlay = document.createElement('div');
+    overlay.id = 'wbset-onboarding-overlay';
+    overlay.innerHTML = `
+      <section class="wbset-onboard-card" role="dialog" aria-modal="true" aria-labelledby="wbset-onboard-title">
+        <header class="wbset-onboard-top">
+          <div class="wbset-onboard-progress" aria-label="向导进度">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <button class="wbset-onboard-skip" type="button">使用默认设置</button>
+        </header>
+        <div class="wbset-onboard-body"></div>
+        <footer class="wbset-onboard-footer">
+          <span class="wbset-onboard-step-label"></span>
+          <div class="wbset-onboard-actions">
+            <button class="wbset-onboard-button wbset-onboard-back" type="button">上一步</button>
+            <button class="wbset-onboard-button primary wbset-onboard-next" type="button">继续</button>
+          </div>
+        </footer>
+      </section>
+    `;
+
+    const body = overlay.querySelector('.wbset-onboard-body');
+    const backButton = overlay.querySelector('.wbset-onboard-back');
+    const nextButton = overlay.querySelector('.wbset-onboard-next');
+    const stepLabel = overlay.querySelector('.wbset-onboard-step-label');
+
+    const finish = (nextSettings) => {
+      const previousLatestTimeline = loadCfg().defaultLatestTimeline !== false;
+      CFG = saveCfg(normalizeCfg(nextSettings));
+      GM_setValue(ONBOARDING_DONE_KEY, true);
+      overlay.remove();
+      let runtimeApplyError = null;
+      try {
+        WB_INTERNAL.applyConfig?.(CFG);
+        applyPanelSettingsNow();
+        syncLauncherButton();
+      } catch (error) {
+        runtimeApplyError = error;
+        console.warn('[WB-SETTINGS] 向导设置已保存，但即时应用失败', error);
+      }
+
+      if (runtimeApplyError) {
+        notify('向导设置已保存；部分设置将在刷新页面后生效', {
+          type: 'error',
+        });
+      } else {
+        notify('设置已保存并即时应用', { type: 'success' });
+      }
+      reconcileHomeTimelineSetting(
+        previousLatestTimeline,
+        CFG.defaultLatestTimeline
+      );
+    };
+
+    const bindDraftInputs = () => {
+      body.querySelectorAll('[data-wbset-setting]').forEach((input) => {
+        const key = input.getAttribute('data-wbset-setting');
+        input.checked = !!draft[key];
+        input.addEventListener('change', () => {
+          draft[key] = input.checked;
+        });
+      });
+    };
+
+    const render = () => {
+      overlay
+        .querySelector('.wbset-onboard-card')
+        .setAttribute('data-step', String(stepIndex));
+      overlay
+        .querySelectorAll('.wbset-onboard-progress span')
+        .forEach((item, index) => {
+          item.classList.toggle('is-active', index <= stepIndex);
+        });
+      stepLabel.textContent = `${stepIndex + 1} / 5`;
+      backButton.hidden = stepIndex === 0;
+      nextButton.textContent = stepIndex === 4 ? '开始使用' : '继续';
+
+      if (stepIndex === 0) {
+        body.innerHTML = `
+          <div class="wbset-onboard-step">
+            <div class="wbset-onboard-kicker">设置向导</div>
+            <h1 id="wbset-onboard-title">屏其不欲见者，复其应有之序。</h1>
+            <p>在时间线、评论、搜索、推荐卡片与互动列表中隐藏本地名单用户，同时整理导航、侧栏与广告内容。</p>
+          </div>`;
+      } else if (stepIndex === 1) {
+        body.innerHTML = `
+          <div class="wbset-onboard-step">
+            <div class="wbset-onboard-kicker">浏览与操作</div>
+            <h1 id="wbset-onboard-title">选择默认时间线和快捷入口</h1>
+            <p>右键屏蔽始终可用；时间线、广告过滤、设置按钮与操作确认可以分别启用。</p>
+            <div class="wbset-onboard-options">
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>主页默认显示「最新微博」</strong><span>打开首页时优先进入按时间排序的全部关注时间线。</span></span><input type="checkbox" data-wbset-setting="defaultLatestTimeline"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>隐藏广告和推广微博</strong><span>过滤带广告、推广或赞助标识的内容。</span></span><input type="checkbox" data-wbset-setting="hideAds"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>显示右下角设置按钮</strong><span>关闭后仍可从 Tampermonkey 菜单中的「设置」进入。</span></span><input type="checkbox" data-wbset-setting="showSettingsButton"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>屏蔽用户前确认</strong><span>通过右键菜单屏蔽时先显示确认对话框。</span></span><input type="checkbox" data-wbset-setting="confirmBeforeBlocking"></label>
+            </div>
+          </div>`;
+        bindDraftInputs();
+      } else if (stepIndex === 2) {
+        body.innerHTML = `
+          <div class="wbset-onboard-step">
+            <div class="wbset-onboard-kicker">屏蔽范围</div>
+            <h1 id="wbset-onboard-title">选择本地名单的生效范围</h1>
+            <p>每种内容都可独立开启或关闭；取消勾选后，当前页面中由该范围隐藏的内容会立即恢复。</p>
+            <div class="wbset-onboard-options is-grid">
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>微博和转发</strong><span>时间线中的微博与转发。</span></span><input type="checkbox" data-wbset-setting="hideBlacklistPosts"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>评论和回复</strong><span>评论区与楼中楼回复。</span></span><input type="checkbox" data-wbset-setting="hideBlacklistComments"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>搜索结果</strong><span>屏蔽用户作为主作者的搜索结果。</span></span><input type="checkbox" data-wbset-setting="hideBlacklistSearchResults"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>用户卡片和推荐项</strong><span>相关用户与推荐用户卡片。</span></span><input type="checkbox" data-wbset-setting="hideBlacklistUserCards"></label>
+              <label class="wbset-onboard-option"><span class="wbset-onboard-option-copy"><strong>转发和点赞用户列表</strong><span>互动列表中的本地屏蔽用户。</span></span><input type="checkbox" data-wbset-setting="hideBlacklistInteractions"></label>
+            </div>
+          </div>`;
+        bindDraftInputs();
+      } else if (stepIndex === 3) {
+        const enabledScopes = [
+          draft.hideBlacklistPosts,
+          draft.hideBlacklistComments,
+          draft.hideBlacklistSearchResults,
+          draft.hideBlacklistUserCards,
+          draft.hideBlacklistInteractions,
+        ].filter(Boolean).length;
+        body.innerHTML = `
+          <div class="wbset-onboard-step">
+            <div class="wbset-onboard-kicker">确认设置</div>
+            <h1 id="wbset-onboard-title">检查当前选项</h1>
+            <p>完成后立即应用；所有选项之后仍可在脚本设置中修改。</p>
+            <div class="wbset-onboard-summary">
+              <div><span>最新微博时间线</span><strong>${draft.defaultLatestTimeline ? '开启' : '关闭'}</strong></div>
+              <div><span>广告过滤</span><strong>${draft.hideAds ? '开启' : '关闭'}</strong></div>
+              <div><span>快捷设置按钮</span><strong>${draft.showSettingsButton ? '显示' : '隐藏'}</strong></div>
+              <div><span>屏蔽前确认</span><strong>${draft.confirmBeforeBlocking ? '开启' : '关闭'}</strong></div>
+              <div><span>屏蔽范围</span><strong>${enabledScopes} / 5 开启</strong></div>
+            </div>
+          </div>`;
+      } else {
+        body.innerHTML = `
+          <div class="wbset-onboard-step">
+            <div class="wbset-onboard-kicker">支持项目</div>
+            <h1 id="wbset-onboard-title">让屏序继续生长</h1>
+            <p>欢迎为项目点亮一颗 Star，或通过 Buy Me a Coffee 支持后续维护。</p>
+            <div class="wbset-onboard-supports">
+              <button class="wbset-onboard-link wbset-onboard-github" type="button">
+                ${githubIconMarkup()}
+                <span class="wbset-onboard-link-copy"><strong>DanielZenFlow</strong><span>打开 Pynseq for Weibo 的 GitHub 项目页</span></span>
+                <span class="wbset-onboard-link-action">打开 GitHub</span>
+              </button>
+              <button class="wbset-onboard-link wbset-onboard-bmc" type="button">
+                ${buyMeACoffeeIconMarkup()}
+                <span class="wbset-onboard-link-copy"><strong>Buy me a coffee</strong><span>打开 DanielZenFlow 的 Buy Me a Coffee 页面</span></span>
+                <span class="wbset-onboard-link-action">打开链接</span>
+              </button>
+            </div>
+          </div>`;
+        body
+          .querySelector('.wbset-onboard-github')
+          ?.addEventListener('click', openProjectGitHub);
+        body
+          .querySelector('.wbset-onboard-bmc')
+          ?.addEventListener('click', openBuyMeACoffee);
+      }
+    };
+
+    overlay
+      .querySelector('.wbset-onboard-skip')
+      .addEventListener('click', () => finish(DEFAULTS));
+    backButton.addEventListener('click', () => {
+      if (stepIndex > 0) stepIndex -= 1;
+      render();
+    });
+    nextButton.addEventListener('click', () => {
+      if (stepIndex < 4) {
+        stepIndex += 1;
+        render();
+      } else {
+        finish(draft);
+      }
+    });
+    document.body.appendChild(overlay);
+    render();
+  }
+
+  function openPanel(initialPage = 'general') {
     ensureStyles();
     let panel = document.querySelector('.wbset-panel');
     if (!panel) {
@@ -6328,19 +6664,19 @@
         <div class="wbset-card" role="dialog" aria-modal="true" aria-labelledby="wbset-dialog-title">
           <div class="wbset-hdr">
             <div class="wbset-title">
-              <strong id="wbset-dialog-title">微博增强设置</strong>
-              <span class="wbset-version">v2.0.0</span>
+              <strong id="wbset-dialog-title">${SCRIPT_NAME}</strong>
+              <span class="wbset-version">v${SCRIPT_VERSION}</span>
             </div>
-            <button class="wbset-btn2 ghost wbset-icon-btn" id="wbset-close" aria-label="关闭设置">×</button>
           </div>
           <div class="wbset-shell">
             <nav class="wbset-nav" role="tablist" aria-label="设置分类">
-              <button type="button" role="tab" aria-selected="true" class="is-active" data-wbset-page="general">常规</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="appearance">外观</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="blacklist">屏蔽设置</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="uids">本地屏蔽列表</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="data">数据管理</button>
-              <button type="button" role="tab" aria-selected="false" data-wbset-page="diagnostics">高级诊断</button>
+              <div class="wbset-nav-pages">
+                <button type="button" role="tab" aria-selected="true" class="is-active" data-wbset-page="general">常规</button>
+                <button type="button" role="tab" aria-selected="false" data-wbset-page="blacklist">屏蔽设置</button>
+                <button type="button" role="tab" aria-selected="false" data-wbset-page="uids">本地屏蔽名单</button>
+                <button type="button" role="tab" aria-selected="false" data-wbset-page="data">新浪微博黑名单管理</button>
+                <button type="button" role="tab" aria-selected="false" data-wbset-page="about">关于</button>
+              </div>
             </nav>
             <div class="wbset-content">
               <section class="wbset-page is-active" role="tabpanel" data-wbset-section="general">
@@ -6349,57 +6685,57 @@
                   <p>控制时间线、搜索结果和广告过滤的默认行为。</p>
                 </div>
                 <div class="wbset-sec">
+                  <div class="wbset-sec-title">设置向导</div>
+                  <div class="wbset-action-row">
+                    <span>逐项配置浏览体验、快捷入口、操作确认和屏蔽范围。</span>
+                    <button class="wbset-btn2" id="wbset-open-onboarding" type="button">打开</button>
+                  </div>
+                </div>
+                <div class="wbset-sec">
                   <div class="wbset-sec-title">浏览体验</div>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>主页默认显示「最新微博」</strong><span>打开首页时自动切换到按时间顺序排列的时间线。</span></span>
-                    <input type="checkbox" id="wbset-latest"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-latest">
                   </label>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>隐藏搜索页「相关用户」</strong><span>隐藏综合搜索页右侧的整个相关用户卡片。</span></span>
-                    <input type="checkbox" id="wbset-search-related-users"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-search-related-users">
                   </label>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>隐藏广告和推广微博</strong><span>识别接口广告标记及页面中的广告、推广和赞助标识。</span></span>
-                    <input type="checkbox" id="wbset-hide-ads"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-hide-ads">
                   </label>
                 </div>
-              </section>
-
-              <section class="wbset-page" role="tabpanel" data-wbset-section="appearance">
-                <div class="wbset-page-head">
-                  <h3>外观</h3>
-                  <p>决定脚本入口以及微博页面各区域是否显示。</p>
-                </div>
                 <div class="wbset-sec">
-                  <div class="wbset-sec-title">脚本入口</div>
+                  <div class="wbset-sec-title">快捷入口</div>
                   <label class="wbset-setting">
-                    <span class="wbset-setting-copy"><strong>显示右下角设置按钮</strong><span>关闭后仍可从 Tampermonkey 菜单中的「打开脚本设置」进入。</span></span>
-                    <input type="checkbox" id="wbset-show-settings-button"><span class="wbset-switch" aria-hidden="true"></span>
+                    <span class="wbset-setting-copy"><strong>显示右下角设置按钮</strong><span>关闭后仍可从 Tampermonkey 菜单中的「设置」进入。</span></span>
+                    <input type="checkbox" id="wbset-show-settings-button">
                   </label>
                 </div>
                 <div class="wbset-sec">
                   <div class="wbset-sec-title">顶部导航</div>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>隐藏「视频」图标</strong><span>控制顶部导航栏的视频入口。</span></span>
-                    <input type="checkbox" id="wbset-nav-video"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-nav-video">
                   </label>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>隐藏「推荐」图标</strong><span>控制顶部导航栏的推荐入口。</span></span>
-                    <input type="checkbox" id="wbset-nav-recommend"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-nav-recommend">
                   </label>
                   <label class="wbset-setting">
                     <span class="wbset-setting-copy"><strong>隐藏「游戏」图标</strong><span>控制顶部导航栏的游戏入口。</span></span>
-                    <input type="checkbox" id="wbset-nav-game"><span class="wbset-switch" aria-hidden="true"></span>
+                    <input type="checkbox" id="wbset-nav-game">
                   </label>
                 </div>
                 <div class="wbset-sec">
                   <div class="wbset-sec-title">侧栏版块</div>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏微博热搜</strong><span>移除侧栏热搜榜。</span></span><input type="checkbox" id="wbset-hot"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏你可能感兴趣的人</strong><span>移除侧栏用户推荐。</span></span><input type="checkbox" id="wbset-sug"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏关注推荐</strong><span>移除关注推荐版块。</span></span><input type="checkbox" id="wbset-follow-rec"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏常用功能</strong><span>移除常用功能版块。</span></span><input type="checkbox" id="wbset-common-functions"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏粉丝群</strong><span>移除粉丝群版块。</span></span><input type="checkbox" id="wbset-fan-groups"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏经常访问的超话</strong><span>移除经常访问的超话版块。</span></span><input type="checkbox" id="wbset-frequent-supertopics"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏微博热搜</strong><span>移除侧栏热搜榜。</span></span><input type="checkbox" id="wbset-hot"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏你可能感兴趣的人</strong><span>移除侧栏用户推荐。</span></span><input type="checkbox" id="wbset-sug"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏关注推荐</strong><span>移除关注推荐版块。</span></span><input type="checkbox" id="wbset-follow-rec"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏常用功能</strong><span>移除常用功能版块。</span></span><input type="checkbox" id="wbset-common-functions"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏粉丝群</strong><span>移除粉丝群版块。</span></span><input type="checkbox" id="wbset-fan-groups"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>隐藏经常访问的超话</strong><span>移除经常访问的超话版块。</span></span><input type="checkbox" id="wbset-frequent-supertopics"></label>
                 </div>
               </section>
 
@@ -6409,16 +6745,16 @@
                   <p>选择本地屏蔽列表中的用户需要在哪些页面和内容类型中隐藏。</p>
                 </div>
                 <div class="wbset-sec">
-                  <div class="wbset-sec-title">屏蔽范围</div>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>微博和转发</strong><span>隐藏本地屏蔽用户发布或转发的微博。</span></span><input type="checkbox" id="wbset-bl-posts"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>评论和回复</strong><span>隐藏本地屏蔽用户的评论和楼中楼回复。</span></span><input type="checkbox" id="wbset-bl-comments"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>搜索结果</strong><span>隐藏本地屏蔽用户作为主作者的搜索结果。</span></span><input type="checkbox" id="wbset-bl-search"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>用户卡片和推荐项</strong><span>隐藏相关用户和推荐用户卡片。</span></span><input type="checkbox" id="wbset-bl-user-cards"><span class="wbset-switch" aria-hidden="true"></span></label>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>转发和点赞用户列表</strong><span>隐藏互动列表里的本地屏蔽用户；关注和粉丝页始终保留。</span></span><input type="checkbox" id="wbset-bl-interactions"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <div class="wbset-sec-title">操作确认</div>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>屏蔽用户前确认</strong><span>通过右键菜单加入本地屏蔽名单或同时加入新浪微博官方黑名单前，在屏幕中央显示确认对话框。</span></span><input type="checkbox" id="wbset-confirm-before-blocking"></label>
                 </div>
                 <div class="wbset-sec">
-                  <div class="wbset-sec-title">操作确认</div>
-                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>屏蔽用户前确认</strong><span>通过右键菜单加入本地屏蔽列表或同时加入新浪微博官方黑名单前，在屏幕中央显示确认对话框。</span></span><input type="checkbox" id="wbset-confirm-before-blocking"><span class="wbset-switch" aria-hidden="true"></span></label>
+                  <div class="wbset-sec-title">屏蔽范围</div>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>微博和转发</strong><span>隐藏本地屏蔽用户发布或转发的微博。</span></span><input type="checkbox" id="wbset-bl-posts"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>评论和回复</strong><span>隐藏本地屏蔽用户的评论和楼中楼回复。</span></span><input type="checkbox" id="wbset-bl-comments"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>搜索结果</strong><span>隐藏本地屏蔽用户作为主作者的搜索结果。</span></span><input type="checkbox" id="wbset-bl-search"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>用户卡片和推荐项</strong><span>隐藏相关用户和推荐用户卡片。</span></span><input type="checkbox" id="wbset-bl-user-cards"></label>
+                  <label class="wbset-setting"><span class="wbset-setting-copy"><strong>转发和点赞用户列表</strong><span>隐藏互动列表里的本地屏蔽用户；关注和粉丝页始终保留。</span></span><input type="checkbox" id="wbset-bl-interactions"></label>
                 </div>
               </section>
 
@@ -6458,7 +6794,7 @@
 
               <section class="wbset-page" role="tabpanel" data-wbset-section="data">
                 <div class="wbset-page-head">
-                  <h3>数据管理</h3>
+                  <h3>新浪微博黑名单管理</h3>
                   <p>同步新浪微博官方黑名单，并管理本地屏蔽列表的备份与恢复。</p>
                 </div>
                 <div class="wbset-sec">
@@ -6490,26 +6826,51 @@
                 </div>
               </section>
 
-              <section class="wbset-page" role="tabpanel" data-wbset-section="diagnostics">
-                <div class="wbset-page-head">
-                  <h3>高级诊断</h3>
-                  <p>在功能异常时查看脚本运行状态，便于定位配置、同步和页面过滤问题。</p>
-                </div>
-                <div class="wbset-sec">
-                  <div class="wbset-sec-title">运行诊断</div>
-                  <div class="wbset-row"><textarea class="wbset-diagnostics" id="wbset-diagnostics" readonly aria-label="运行诊断信息"></textarea></div>
-                  <div class="wbset-row">
-                    <button class="wbset-btn2" id="wbset-diagnostics-refresh">刷新诊断</button>
-                    <button class="wbset-btn2 ghost" id="wbset-diagnostics-copy">复制诊断信息</button>
-                  </div>
-                  <div class="wbset-row wbset-note">诊断信息只包含版本、页面类型、数量、运行状态与能力检测，不记录原始路径，不包含 UID 列表，也不会自动上传。</div>
+              <section class="wbset-page" role="tabpanel" data-wbset-section="about">
+                <section class="wbset-about-hero">
+                  <div class="wbset-about-eyebrow">PYNSEQ FOR WEIBO</div>
+                  <h3><a class="wbset-about-title-link" href="${GITHUB_URL}" target="_blank" rel="noopener">${SCRIPT_NAME}</a></h3>
+                  <p>让微博回到更清爽、更可控的时间线：隐藏本地名单用户的内容，整理导航与侧栏，并管理新浪微博官方黑名单。</p>
+                  <span class="wbset-about-version">v${SCRIPT_VERSION}</span>
+                  <span class="wbset-about-version">MIT License</span>
+                </section>
+                <div class="wbset-about-grid">
+                  <section class="wbset-about-card">
+                    <h3>Star 提醒</h3>
+                    <p>按使用阶段递进提醒；你可以随时在这里关闭或重新开启。</p>
+                    <div class="wbset-star-status" id="wbset-star-status"></div>
+                    <div class="wbset-about-card-actions">
+                      <button class="wbset-btn2" id="wbset-star-toggle" type="button"></button>
+                    </div>
+                  </section>
+                  <section class="wbset-about-card">
+                    <h3>支持项目</h3>
+                    <p>在 GitHub 为项目点亮 Star，或通过 Buy Me a Coffee 支持后续维护。</p>
+                    <div class="wbset-about-card-actions wbset-support-actions">
+                      <a class="wbset-support-link wbset-support-github" href="${GITHUB_URL}" target="_blank" rel="noopener">
+                        <span class="wbset-support-icon" aria-hidden="true">${githubIconMarkup()}</span>
+                        <span class="wbset-support-link-copy"><strong>DanielZenFlow</strong><span>为 Pynseq for Weibo 点亮一颗 Star</span></span>
+                        <span class="wbset-support-link-action">打开 GitHub</span>
+                      </a>
+                      <a class="wbset-support-link wbset-support-bmc" href="${BUY_ME_A_COFFEE_URL}" target="_blank" rel="noopener">
+                        ${buyMeACoffeeIconMarkup()}
+                        <span class="wbset-support-link-copy"><strong>Buy me a coffee</strong><span>DanielZenFlow</span></span>
+                        <span class="wbset-support-link-action">打开链接</span>
+                      </a>
+                    </div>
+                  </section>
                 </div>
               </section>
             </div>
           </div>
           <div class="wbset-ftr">
-            <button class="wbset-btn2 ghost" id="wbset-cancel">取消</button>
-            <button class="wbset-btn2 primary" id="wbset-save">保存</button>
+            <a class="wbset-author" href="${GITHUB_URL}" target="_blank" rel="noopener" aria-label="DanielZenFlow 的 GitHub 项目">
+              ${githubIconMarkup()}<span>DanielZenFlow</span>
+            </a>
+            <div class="wbset-footer-actions">
+              <button class="wbset-btn2 ghost" id="wbset-cancel">取消</button>
+              <button class="wbset-btn2 primary" id="wbset-save">保存设置</button>
+            </div>
           </div>
         </div>
       `;
@@ -6546,7 +6907,6 @@
       const $showSettingsButton = panel.querySelector(
         '#wbset-show-settings-button'
       );
-      const $diagnostics = panel.querySelector('#wbset-diagnostics');
       const $uids = panel.querySelector('#wbset-uids');
       const $count = panel.querySelector('#wbset-count');
       const $uidMatchCount = panel.querySelector('#wbset-uid-match-count');
@@ -6587,32 +6947,6 @@
           CFG.confirmBeforeBlocking !== false;
         $hideAds.checked = CFG.hideAds !== false;
         $showSettingsButton.checked = CFG.showSettingsButton !== false;
-      }
-      function refreshDiagnostics() {
-        const snapshot = WB_INTERNAL.getDiagnostics?.() || {
-          error: '运行诊断暂不可用',
-        };
-        $diagnostics.value = JSON.stringify(snapshot, null, 2);
-        return $diagnostics.value;
-      }
-      async function copyDiagnostics() {
-        const text = refreshDiagnostics();
-        try {
-          if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(text);
-          } else {
-            $diagnostics.focus();
-            $diagnostics.select();
-            if (!document.execCommand('copy')) {
-              throw new Error('浏览器拒绝复制');
-            }
-          }
-          notify('✅ 诊断信息已复制', { type: 'success' });
-        } catch (error) {
-          notify(`❌ 复制失败：${error?.message || '未知错误'}`, {
-            type: 'error',
-          });
-        }
       }
       function refreshUIDManager(options = {}) {
         if (options.resetPage) uidManagerPage = 1;
@@ -6708,12 +7042,11 @@
           );
         });
         if (pageName === 'uids') refreshUIDManager();
-        if (pageName === 'diagnostics') refreshDiagnostics();
+        if (pageName === 'about') renderStarReminderStatus(panel);
       }
 
       refreshCfgUI();
       refreshUIDManager();
-      refreshDiagnostics();
 
       const nav = panel.querySelector('.wbset-nav');
       nav.addEventListener('click', (e) => {
@@ -6735,6 +7068,26 @@
           buttons[(currentIndex + direction + buttons.length) % buttons.length];
         next.focus();
         next.click();
+      });
+      panel
+        .querySelector('#wbset-open-onboarding')
+        .addEventListener('click', () => {
+          closePanel();
+          openOnboarding({ force: true });
+        });
+      panel
+        .querySelector('#wbset-star-toggle')
+        .addEventListener('click', () => toggleStarReminder(panel));
+      [
+        ['.wbset-author', openProjectGitHub],
+        ['.wbset-about-title-link', openProjectGitHub],
+        ['.wbset-support-github', openProjectGitHub],
+        ['.wbset-support-bmc', openBuyMeACoffee],
+      ].forEach(([selector, handler]) => {
+        panel.querySelector(selector)?.addEventListener('click', (event) => {
+          event.preventDefault();
+          handler();
+        });
       });
 
       panel
@@ -6784,13 +7137,6 @@
           type: 'success',
         });
       });
-      panel
-        .querySelector('#wbset-diagnostics-refresh')
-        .addEventListener('click', refreshDiagnostics);
-      panel
-        .querySelector('#wbset-diagnostics-copy')
-        .addEventListener('click', copyDiagnostics);
-
       // 导入（合并）按钮事件
       const fileInputMerge = createFileInput(async (file) => {
         try {
@@ -6983,26 +7329,6 @@
         );
       });
 
-      function openNativeHomeTimeline() {
-        const allFollowingTab = document.querySelector(
-          '[role="link"][title="全部关注"]'
-        );
-        if (allFollowingTab instanceof HTMLElement) {
-          allFollowingTab.click();
-          WB_INTERNAL.dom.schedule(
-            'settings-native-home-fallback',
-            () => {
-              if (/^\/mygroups(?:\/|$)/.test(location.pathname)) {
-                location.assign(`${location.origin}/`);
-              }
-            },
-            800
-          );
-          return;
-        }
-        location.assign(`${location.origin}/`);
-      }
-
       panel.querySelector('#wbset-save').addEventListener('click', () => {
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
         const nextLatestTimeline = $latest.checked;
@@ -7025,7 +7351,7 @@
         CFG.confirmBeforeBlocking = $confirmBeforeBlocking.checked;
         CFG.hideAds = $hideAds.checked;
         CFG.showSettingsButton = $showSettingsButton.checked;
-        saveCfg(CFG);
+        CFG = saveCfg(CFG);
         closePanel({ reset: false });
         let runtimeApplyError = null;
         try {
@@ -7036,25 +7362,12 @@
           runtimeApplyError = error;
           console.warn('[WB-SETTINGS] 设置已保存，但即时应用失败', error);
         }
-        const isMainWeiboHost = ['weibo.com', 'www.weibo.com'].includes(
-          location.hostname
-        );
-        const isHomeTimelineRoute =
-          location.pathname === '/' ||
-          location.pathname === '' ||
-          /^\/mygroups(?:\/|$)/.test(location.pathname);
-        // 从"最新微博"页关闭开关时，不能原地刷新 /mygroups；
-        // 回到首页后，关闭状态会保留原生首页，开启状态则重新切到最新微博。
         if (
-          previousLatestTimeline !== nextLatestTimeline &&
-          isMainWeiboHost &&
-          isHomeTimelineRoute
+          reconcileHomeTimelineSetting(
+            previousLatestTimeline,
+            nextLatestTimeline
+          )
         ) {
-          if (!nextLatestTimeline) {
-            openNativeHomeTimeline();
-            return;
-          }
-          location.assign(`${location.origin}/`);
           return;
         }
         if (runtimeApplyError) {
@@ -7066,9 +7379,6 @@
         }
       });
       panel.querySelector('#wbset-cancel').addEventListener('click', () => {
-        closePanel();
-      });
-      panel.querySelector('#wbset-close').addEventListener('click', () => {
         closePanel();
       });
       panel.addEventListener('click', (e) => {
@@ -7083,9 +7393,15 @@
         CFG = loadCfg();
         refreshCfgUI();
         refreshUIDManager();
-        refreshDiagnostics();
+        setActivePage(panel.getAttribute('data-wbset-initial-page') || 'general');
       });
     }
+    const validPage = ['general', 'blacklist', 'uids', 'data', 'about'].includes(
+      initialPage
+    )
+      ? initialPage
+      : 'general';
+    panel.setAttribute('data-wbset-initial-page', validPage);
     panel.style.display = 'flex';
     panel.dispatchEvent(new CustomEvent('wbset:open'));
   }
@@ -7104,9 +7420,9 @@
           <circle cx="12" cy="12" r="3"/>
         </svg>
       `;
-      btn.title = '微博增强设置';
-      btn.setAttribute('aria-label', '打开微博增强设置');
-      btn.addEventListener('click', openPanel);
+      btn.title = `${SCRIPT_NAME} 设置`;
+      btn.setAttribute('aria-label', `打开 ${SCRIPT_NAME} 设置`);
+      btn.addEventListener('click', () => openPanel('general'));
       document.documentElement.appendChild(btn);
     }
   }
@@ -7115,8 +7431,10 @@
     ensureStyles();
     syncLauncherButton();
     if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('打开脚本设置', openPanel);
+      GM_registerMenuCommand('设置', () => openPanel('general'));
+      GM_registerMenuCommand('关于', () => openPanel('about'));
     }
+    openOnboarding();
   }
 
   if (typeof GM_addValueChangeListener === 'function') {
@@ -7124,9 +7442,15 @@
       WB_INTERNAL.config.key,
       (_name, _oldValue, _newValue, remote) => {
         if (!remote) return;
+        const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
         CFG = loadCfg();
+        WB_INTERNAL.applyConfig?.(CFG);
         applyPanelSettingsNow();
         syncLauncherButton();
+        reconcileHomeTimelineSetting(
+          previousLatestTimeline,
+          CFG.defaultLatestTimeline
+        );
         const panel = document.querySelector('.wbset-panel');
         if (panel?.style.display !== 'none') {
           panel.dispatchEvent(new CustomEvent('wbset:open'));
