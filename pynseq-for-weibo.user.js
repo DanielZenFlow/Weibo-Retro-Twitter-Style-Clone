@@ -6,6 +6,7 @@
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
 // @version      2.0.5
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
+// @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
 // @license      MIT
 // @homepage     https://github.com/DanielZenFlow/Pynseq-Weibo

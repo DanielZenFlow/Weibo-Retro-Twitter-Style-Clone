@@ -24,6 +24,7 @@ function sourceBetween(startMarker, endMarker) {
 
 assert.doesNotMatch(source, /window\.(?:WB_RETRO_CONFIRM|WB_BL_SYNC)/);
 assert.doesNotMatch(source, /function\s+(?:filterData|filterAdsFromData)\s*\(/);
+assert.match(source, /^\/\/ @description:en\s+\S.+$/m);
 assert.match(source, /function\s+filterContentTree\s*\(/);
 assert.match(source, /function\s+runControlledSync\s*\(/);
 assert.match(source, /controller\.abort\(\)/);
