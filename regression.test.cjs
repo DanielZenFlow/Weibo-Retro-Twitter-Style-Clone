@@ -11,6 +11,8 @@ const source = fs.readFileSync(scriptPath, 'utf8');
 const readmeSource = fs.readFileSync(path.join(__dirname, 'readme.md'), 'utf8');
 const iconPath = path.join(__dirname, 'pynseq-for-weibo-icon.png');
 const iconSource = fs.readFileSync(iconPath);
+const immutableIconURL =
+  'https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png';
 const greasyForkURL =
   'https://greasyfork.org/en/scripts/564839-pynseq-for-weibo-%E5%B1%8F%E5%BA%8F-%E5%BE%AE%E5%8D%9A-%E6%9C%AC%E5%9C%B0%E5%B1%8F%E8%94%BD%E5%90%8D%E5%8D%95%E4%B8%8E%E6%97%B6%E9%97%B4%E7%BA%BF%E6%8E%A7%E5%88%B6-%E5%B1%8F%E8%94%BD%E7%83%AD%E6%90%9C';
 
@@ -33,14 +35,8 @@ assert.doesNotMatch(source, /\balert\s*\(/);
 assert.match(source, /function\s+showNotification\s*\(/);
 assert.match(source, /WB_INTERNAL\.notify\s*=\s*showNotification/);
 assert.match(source, /const GITHUB_URL = 'https:\/\/github\.com\/DanielZenFlow\/Pynseq-Weibo'/);
-assert.match(
-  source,
-  /@icon\s+https:\/\/raw\.githubusercontent\.com\/DanielZenFlow\/Pynseq-Weibo\/main\/pynseq-for-weibo-icon\.png/
-);
-assert.match(
-  source,
-  /@icon64\s+https:\/\/raw\.githubusercontent\.com\/DanielZenFlow\/Pynseq-Weibo\/main\/pynseq-for-weibo-icon\.png/
-);
+assert.equal(source.includes(`// @icon         ${immutableIconURL}`), true);
+assert.equal(source.includes(`// @icon64       ${immutableIconURL}`), true);
 assert.equal(
   fs.existsSync(path.join(__dirname, 'weibo-retro-twitter-style-clone.user.js')),
   false

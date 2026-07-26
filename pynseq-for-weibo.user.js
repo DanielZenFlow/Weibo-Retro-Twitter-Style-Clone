@@ -11,8 +11,8 @@
 // @license      MIT
 // @homepage     https://github.com/DanielZenFlow/Pynseq-Weibo
 // @supportURL   https://github.com/DanielZenFlow/Pynseq-Weibo/issues
-// @icon         https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/main/pynseq-for-weibo-icon.png
-// @icon64       https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/main/pynseq-for-weibo-icon.png
+// @icon         https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png
+// @icon64       https://raw.githubusercontent.com/DanielZenFlow/Pynseq-Weibo/c5e75843ef29f16fdbd1a1a22f11dc9206be184f/pynseq-for-weibo-icon.png
 // @match        https://weibo.com/*
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
