@@ -27,6 +27,16 @@ function sourceBetween(startMarker, endMarker) {
 assert.doesNotMatch(source, /window\.(?:WB_RETRO_CONFIRM|WB_BL_SYNC)/);
 assert.doesNotMatch(source, /function\s+(?:filterData|filterAdsFromData)\s*\(/);
 assert.match(source, /^\/\/ @description:en\s+\S.+$/m);
+assert.doesNotMatch(source, /^\/\/ @match\s+http:\/\//m);
+assert.match(source, /function isTrustedUserEvent\(event\)/);
+assert.match(
+  sourceBetween('  function createCenteredConfirm(', '  function showCenteredConfirm('),
+  /if \(!isTrustedUserEvent\(event\)\) return;/
+);
+assert.match(
+  sourceBetween('    const handleContextMenu = (e) => {', "    document.addEventListener('contextmenu'"),
+  /if \(!isTrustedUserEvent\(e\)\) return;/
+);
 assert.match(source, /function\s+filterContentTree\s*\(/);
 assert.match(source, /function\s+runControlledSync\s*\(/);
 assert.match(source, /controller\.abort\(\)/);
@@ -35,6 +45,220 @@ assert.doesNotMatch(source, /\balert\s*\(/);
 assert.match(source, /function\s+showNotification\s*\(/);
 assert.match(source, /WB_INTERNAL\.notify\s*=\s*showNotification/);
 assert.match(source, /const GITHUB_URL = 'https:\/\/github\.com\/DanielZenFlow\/Pynseq-Weibo'/);
+const filteredUsersParserSource = sourceBetween(
+  '  function normalizeSyncCursor(value) {',
+  '  function buildFilteredUsersURL(page, cursor) {'
+);
+const filteredUsersParserContext = {};
+vm.runInNewContext(
+  `${filteredUsersParserSource}
+globalThis.parseFilteredUsers = parseFilteredUsersResponse;`,
+  filteredUsersParserContext
+);
+assert.throws(
+  () => filteredUsersParserContext.parseFilteredUsers({ ok: 0 }, '测试'),
+  /失败/
+);
+assert.throws(
+  () =>
+    filteredUsersParserContext.parseFilteredUsers(
+      { ok: 1, card_group: {} },
+      '测试'
+    ),
+  /缺少名单数据/
+);
+assert.equal(
+  filteredUsersParserContext.parseFilteredUsers(
+    { ok: 1, card_group: [], next_cursor: 0 },
+    '测试'
+  ).nextCursor,
+  ''
+);
+assert.equal(
+  (source.match(/const parsed = parseFilteredUsersResponse\(data,/g) || []).length,
+  3
+);
+const observerSource = sourceBetween(
+  '      observer.observe(root, {',
+  '    function subscribeMutations('
+);
+[
+  'href',
+  'data-user-id',
+  'data-user-card',
+  'data-usercard',
+  'data-usercard-mid',
+  'data-uid',
+  'uid',
+  'usercard',
+  'nick-name',
+].forEach((attribute) => {
+  assert.match(observerSource, new RegExp(`'${attribute}'`));
+});
+const userContextSelectorSource = sourceBetween(
+  '  const USER_CONTEXT_TARGET_SELECTOR = [',
+  '  function getUserNameLabel('
+);
+assert.match(userContextSelectorSource, /'\.woo-avatar-main'/);
+assert.match(userContextSelectorSource, /'\.woo-avatar-img'/);
+assert.match(userContextSelectorSource, /'\[usercard\^="name=@"\]'/);
+assert.match(userContextSelectorSource, /'header a\[href=""\]'/);
+const extractDOMUIDsSource = sourceBetween(
+  '  function extractDOMUIDs(el) {',
+  '  function collectScopedUserContextUIDs('
+);
+assert.match(
+  extractDOMUIDsSource,
+  /addDirectUID\(el\.getAttribute\('data-user-card'\)\)/
+);
+assert.match(
+  extractDOMUIDsSource,
+  /addMatches\(href, \/\^\\\/\(\\d\{5,\}\)/
+);
+const uidParserSandbox = {};
+vm.runInNewContext(
+  `${extractDOMUIDsSource}
+globalThis.extractDOMUIDsForTest = extractDOMUIDs;`,
+  uidParserSandbox
+);
+const fakeUIDElement = (attributes) => ({
+  getAttribute(name) {
+    return Object.hasOwn(attributes, name) ? attributes[name] : null;
+  },
+});
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({ 'data-user-card': '3210890705' })
+    )
+  ),
+  ['3210890705']
+);
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({ href: '/3210890705/Rad3Fk9LU' })
+    )
+  ),
+  ['3210890705']
+);
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({ usercard: 'name=@_苏世独立_横而不流' })
+    )
+  ),
+  []
+);
+const userContextResolverSource = sourceBetween(
+  '  function getUserContextFromTarget(target) {',
+  '  function shouldConfirmBeforeBlocking('
+);
+const searchContextResolverSource = sourceBetween(
+  '  function getSearchResultUserContext(el) {',
+  '  function getCurrentProfilePageUID() {'
+);
+assert.match(
+  searchContextResolverSource,
+  /unresolvedDirectTarget[\s\S]*?expectedName[\s\S]*?fallbackName[\s\S]*?expectedName !== fallbackName[\s\S]*?return null/
+);
+assert.match(
+  userContextResolverSource,
+  /firstDOMUID\(source\)\s*\|\|\s*getScopedUserContextUID\(nameTarget, explicitName\)/
+);
+assert.doesNotMatch(
+  userContextResolverSource,
+  /firstDOMUID\(source,\s*post\)/
+);
+assert.match(
+  sourceBetween(
+    '  function getCurrentProfilePageUID() {',
+    '  function getUserContextFromTarget('
+  ),
+  /\/p\\\/100505\(\\d\{5,\}\)/
+);
+const scopedUserResolverSource = sourceBetween(
+  '  function getScopedUserContextUID(',
+  '  function normDOMText('
+);
+assert.match(
+  scopedUserResolverSource,
+  /addScope\(target\.closest\(DOM_COMMENT_ROOT_SELECTOR\), false\)/
+);
+assert.match(
+  scopedUserResolverSource,
+  /chooseScopedUserContextUID\(\s*records,\s*expectedName,\s*allowUniqueFallback\s*\)/
+);
+const chooseScopedUserContextUIDSource = sourceBetween(
+  '  function chooseScopedUserContextUID(',
+  '  function getScopedUserContextUID('
+);
+const scopedUIDSandbox = {
+  cleanUserDisplayName(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return value.replace(/^@+/, '');
+  },
+};
+vm.runInNewContext(
+  `${chooseScopedUserContextUIDSource}
+globalThis.chooseScopedUserContextUIDForTest = chooseScopedUserContextUID;`,
+  scopedUIDSandbox
+);
+const scopedUIDRecords = [
+  {
+    uid: '3210890705',
+    labels: ['_苏世独立_横而不流', ''],
+  },
+  {
+    uid: '7299117014',
+    labels: ['科技主理人'],
+  },
+];
+assert.equal(
+  scopedUIDSandbox.chooseScopedUserContextUIDForTest(
+    scopedUIDRecords,
+    '_苏世独立_横而不流',
+    false
+  ),
+  '3210890705'
+);
+assert.equal(
+  scopedUIDSandbox.chooseScopedUserContextUIDForTest(
+    scopedUIDRecords,
+    '没有数字 UID 的提及用户',
+    false
+  ),
+  '',
+  'an unresolved mention must never fall back to the post author'
+);
+assert.equal(
+  scopedUIDSandbox.chooseScopedUserContextUIDForTest(
+    [{ uid: '3210890705', labels: [] }],
+    '',
+    true
+  ),
+  '3210890705'
+);
+assert.equal(
+  scopedUIDSandbox.chooseScopedUserContextUIDForTest(
+    [{ uid: '3210890705', labels: [] }],
+    '',
+    false
+  ),
+  ''
+);
+const contextMenuHandlerSource = sourceBetween(
+  '    const handleContextMenu = (e) => {',
+  "    document.addEventListener('contextmenu', handleContextMenu, true);"
+);
+assert.match(
+  contextMenuHandlerSource,
+  /const contextTarget = nameTarget \|\| directTarget/
+);
+assert.match(
+  contextMenuHandlerSource,
+  /USER_CONTEXT_TARGET_SELECTOR/
+);
 assert.equal(source.includes(`// @icon         ${immutableIconURL}`), true);
 assert.equal(source.includes(`// @icon64       ${immutableIconURL}`), true);
 assert.equal(
@@ -125,6 +349,22 @@ const settingsSource = sourceBetween(
   '/* === Settings v5:',
   '/* === /Settings v5 === */'
 );
+assert.match(source, /const UID_MUTATION_LOCK_KEY = 'WB_BL_mutation_lock_v1'/);
+assert.match(source, /async function withLocalBLMutationLock\(task\)/);
+assert.match(source, /confirmed\?\.owner === owner/);
+assert.match(source, /async function mutateLocalBLStorage\(options = \{\}\)/);
+assert.match(source, /async function commitSyncedLocalBL\(/);
+assert.equal(
+  (source.match(/await commitSyncedLocalBL\(/g) || []).length,
+  3
+);
+assert.match(settingsSource, /function isTrustedSettingsEvent\(event\)/);
+assert.match(
+  settingsSource,
+  /#wbset-save'\)\.addEventListener\('click', \(event\) => \{[\s\S]*?if \(!isTrustedSettingsEvent\(event\)\) return;/
+);
+assert.doesNotMatch(source, /cdn\.buymeacoffee\.com/);
+assert.match(source, /function buyMeACoffeeIconMarkup\(\)[\s\S]*?<svg viewBox="0 0 24 24"/);
 const panelMarkupSource = sourceBetween(
   '      panel.innerHTML = `',
   '      document.body.appendChild(panel);'
@@ -186,8 +426,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.1\.0/);
-assert.match(source, /const SCRIPT_VERSION = '2\.1\.0'/);
+assert.match(source, /@version\s+2\.2\.0/);
+assert.match(source, /const SCRIPT_VERSION = '2\.2\.0'/);
 assert.match(source, /const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博'/);
 assert.match(settingsSource, /<span class="wbset-version">v\$\{SCRIPT_VERSION\}<\/span>/);
 assert.doesNotMatch(source, /本地黑名单/);
@@ -237,13 +477,21 @@ const onboardingFinishSource = sourceBetween(
   '    const finish = (nextSettings) => {',
   '    const bindDraftInputs = () => {'
 );
+assert.match(onboardingFinishSource, /const previousCfg = loadCfg\(\)/);
 assert.match(
   onboardingFinishSource,
-  /const previousLatestTimeline = loadCfg\(\)\.defaultLatestTimeline !== false/
+  /previousCfg\.defaultLatestTimeline !== false/
+);
+assert.match(
+  onboardingFinishSource,
+  /const previousHotSearchHidden = previousCfg\.hideHotSearch === true/
 );
 assert.match(onboardingFinishSource, /CFG = saveCfg\(normalizeCfg\(nextSettings\)\)/);
 assert.match(onboardingFinishSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
-assert.match(onboardingFinishSource, /applyPanelSettingsNow\(\)/);
+assert.match(
+  onboardingFinishSource,
+  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:/
+);
 assert.match(onboardingFinishSource, /syncLauncherButton\(\)/);
 assert.match(onboardingFinishSource, /reconcileHomeTimelineSetting\(/);
 assert.match(source, /if \(!isInsideCommentSurface\(el\)\) return null/);
@@ -257,15 +505,23 @@ assert.ok(
   'non-comment author links must be rejected before generic comment fallback'
 );
 const immediateBlockSource = sourceBetween(
-  '  function addContextUserToBL(',
+  '  async function addContextUserToBL(',
   '  function getCookieValue('
 );
 assert.match(immediateBlockSource, /hideContentRoot\(post, ctx\.uid\)/);
 assert.match(immediateBlockSource, /compactVirtualScrollerGaps\(document\)/);
 assert.match(immediateBlockSource, /nudgeTimelineLayout\(\)/);
+assert.match(
+  immediateBlockSource,
+  /const added = await addUIDToLocalBL\(ctx\.uid\);[\s\S]*try \{/
+);
+assert.match(
+  immediateBlockSource,
+  /catch \(err\) \{[\s\S]*当前页面刷新失败/
+);
 const hideShellSource = sourceBetween(
   '  function findHideShell(',
-  '  function setImportantStyleIfNeeded('
+  '  function hideContentRoot('
 );
 assert.match(hideShellSource, /virtualView\.firstElementChild/);
 assert.match(
@@ -277,10 +533,13 @@ const virtualGapSource = sourceBetween(
   '  function compactVirtualScrollerGaps(',
   '  function isWeiboSearchResultPage('
 );
-assert.match(virtualGapSource, /clearVirtualCompactionState\(cleanupRoot\)/);
+assert.match(
+  virtualGapSource,
+  /updateNativeTimelinePaginationGuards\(scanRoot\)/
+);
 assert.doesNotMatch(
   virtualGapSource,
-  /applyVirtual(?:Item|Wrapper)Compaction/
+  /(?:transform|top|min-height|height|scrollTo|scrollBy)\s*[=:]/
 );
 assert.equal(
   source.includes('      [${COMPACTED_VIRTUAL_ITEM_ATTR}] {'),
@@ -310,8 +569,105 @@ assert.match(
     '  function hideContentRoot(',
     '  let floatingVideoSuppressUntil ='
   ),
-  /prepareNativeTimelinePaginationGuard\(target\)[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
+  /prepareNativeTimelinePaginationGuard\(target\)[\s\S]*?BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
 );
+const floatingVideoSuppressionSource = sourceBetween(
+  '  function suppressFloatingVideoPlayers(',
+  '  function getNativeTimelinePaginationParts('
+);
+assert.match(
+  source,
+  /\[\$\{FLOATING_VIDEO_SUPPRESS_ATTR\}="1"\][\s\S]*?display:\s*none !important/
+);
+assert.match(
+  floatingVideoSuppressionSource,
+  /player\.setAttribute\(FLOATING_VIDEO_SUPPRESS_ATTR, '1'\)/
+);
+assert.match(
+  floatingVideoSuppressionSource,
+  /restoreSuppressedFloatingVideoPlayers/
+);
+assert.doesNotMatch(
+  floatingVideoSuppressionSource,
+  /player\.remove\(\)|style\.(?:setProperty|removeProperty)/
+);
+assert.doesNotMatch(
+  source,
+  /removeWeiboFloatingVideoPlayers|removeFloatingVideoPlayer/
+);
+const clearBlockedStateSource = sourceBetween(
+  '  function clearOwnBlockedContentHideState(el) {',
+  '  function clearBlockedContentHideState(root) {'
+);
+assert.match(
+  clearBlockedStateSource,
+  /originalAria === BLOCKED_CONTENT_ARIA_ABSENT[\s\S]*?removeAttribute\('aria-hidden'\)/
+);
+assert.match(
+  clearBlockedStateSource,
+  /originalAria !== null[\s\S]*?setAttribute\('aria-hidden', originalAria\)/
+);
+assert.doesNotMatch(
+  clearBlockedStateSource,
+  /style\.(?:removeProperty|setProperty)|style\.[A-Za-z]+\s*=/
+);
+class FakeRestorableElement {
+  constructor(attributes = {}) {
+    this.attributes = new Map(Object.entries(attributes));
+    this.style = {
+      cssText:
+        'display:flex;height:72px;margin:8px;padding:4px;overflow:visible',
+    };
+  }
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+}
+const blockedRestoreContext = vm.createContext({
+  Element: FakeRestorableElement,
+  BLOCKED_CONTENT_HIDE_ATTR: 'data-hidden',
+  BLOCKED_CONTENT_UID_ATTR: 'data-hidden-uid',
+  BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR: 'data-original-aria',
+  BLOCKED_CONTENT_ARIA_ABSENT: '__absent__',
+  COMMENT_CONTENT_ROOT_ATTR: 'data-comment-root',
+});
+vm.runInContext(
+  `${clearBlockedStateSource}
+   this.clearOwnBlockedContentHideState = clearOwnBlockedContentHideState;`,
+  blockedRestoreContext
+);
+const nativeStyledCard = new FakeRestorableElement({
+  'data-hidden': '1',
+  'data-hidden-uid': '123456',
+  'data-comment-root': '1',
+  'data-original-aria': 'false',
+  'aria-hidden': 'true',
+});
+const nativeStyleBeforeRestore = nativeStyledCard.style.cssText;
+blockedRestoreContext.clearOwnBlockedContentHideState(nativeStyledCard);
+assert.equal(nativeStyledCard.getAttribute('aria-hidden'), 'false');
+assert.equal(nativeStyledCard.style.cssText, nativeStyleBeforeRestore);
+assert.equal(nativeStyledCard.hasAttribute('data-hidden'), false);
+assert.equal(nativeStyledCard.hasAttribute('data-hidden-uid'), false);
+assert.equal(nativeStyledCard.hasAttribute('data-comment-root'), false);
+assert.equal(nativeStyledCard.hasAttribute('data-original-aria'), false);
+const nativeCardWithoutAria = new FakeRestorableElement({
+  'data-hidden': '1',
+  'data-original-aria': '__absent__',
+  'aria-hidden': 'true',
+});
+blockedRestoreContext.clearOwnBlockedContentHideState(nativeCardWithoutAria);
+assert.equal(nativeCardWithoutAria.hasAttribute('aria-hidden'), false);
+assert.equal(nativeCardWithoutAria.style.cssText, nativeStyleBeforeRestore);
 const paginationGuardSource = sourceBetween(
   '  function getNativeTimelinePaginationParts(',
   '  function compactVirtualScrollerGaps('
@@ -334,7 +690,7 @@ assert.doesNotMatch(
 );
 assert.match(
   virtualGapSource,
-  /updateNativeTimelinePaginationGuards\(cleanupRoot\)/
+  /updateNativeTimelinePaginationGuards\(scanRoot\)/
 );
 assert.match(
   sourceBetween(
@@ -403,6 +759,53 @@ const recycledShellSource = sourceBetween(
   '  function restoreRecycledVirtualContentShells(',
   '  function hideBlockedDOMPosts('
 );
+const uidOutsideCommentRootsSource = sourceBetween(
+  '  function hasUIDOutsideCommentRoots(',
+  '  function findCommentRootForUID('
+);
+assert.match(
+  uidOutsideCommentRootsSource,
+  /getElementsForUID\(root, id\)\.some/
+);
+assert.match(
+  uidOutsideCommentRootsSource,
+  /!findCommentRootForUID\(candidate, id\)/
+);
+class FakeUIDScope {
+  constructor(candidates = []) {
+    this.candidates = candidates;
+  }
+}
+const uidOutsideCommentRootsSandbox = {
+  Element: FakeUIDScope,
+  getElementsForUID(root) {
+    return root.candidates;
+  },
+  findCommentRootForUID(candidate) {
+    return candidate.commentRoot ? {} : null;
+  },
+};
+vm.runInNewContext(
+  `${uidOutsideCommentRootsSource}
+globalThis.hasUIDOutsideCommentRootsForTest = hasUIDOutsideCommentRoots;`,
+  uidOutsideCommentRootsSandbox
+);
+assert.equal(
+  uidOutsideCommentRootsSandbox.hasUIDOutsideCommentRootsForTest(
+    new FakeUIDScope([{ commentRoot: true }]),
+    '5288245215'
+  ),
+  false,
+  'a blocked UID found only in comments must not keep a recycled feed shell hidden'
+);
+assert.equal(
+  uidOutsideCommentRootsSandbox.hasUIDOutsideCommentRootsForTest(
+    new FakeUIDScope([{ commentRoot: true }, { commentRoot: false }]),
+    '5288245215'
+  ),
+  true,
+  'a blocked feed author outside comment roots must keep its content shell hidden'
+);
 assert.match(recycledShellSource, /node\.matches\(VIRTUAL_VIEW_SELECTOR\)/);
 assert.match(recycledShellSource, /hasUIDOutsideCommentRoots\(node, uid\)/);
 assert.match(
@@ -431,8 +834,10 @@ assert.ok(
     runtimeApplySource.indexOf('hideBlockedDOMPosts(document)'),
   'scope changes must restore previously hidden roots before reapplying enabled filters'
 );
-assert.match(source, /const VIRTUAL_COMPACTION_RUNTIME =/);
-assert.doesNotMatch(source, /virtualScrollerCompactionState/);
+assert.doesNotMatch(
+  source,
+  /VIRTUAL_COMPACTION|COMPACTED_VIRTUAL|applyVirtual(?:Item|Wrapper)Compaction|clearVirtualCompactionState/
+);
 assert.equal((source.match(/new MutationObserver/g) || []).length, 2);
 assert.equal((source.match(/history\.pushState\s*=/g) || []).length, 1);
 assert.equal((source.match(/history\.replaceState\s*=/g) || []).length, 1);
@@ -604,6 +1009,14 @@ const relaySource = sourceBetween(
   '  function requestOfficialBlockViaMainHost(uid) {',
   '  async function processOfficialBlockRelay() {'
 );
+const relayCloseSource = sourceBetween(
+  '  function scheduleOfficialBlockRelayClose(',
+  '  function requestOfficialBlockViaMainHost('
+);
+assert.match(
+  relayCloseSource,
+  /clearOfficialBlockRelayState\(requestId\)/
+);
 assert.match(relaySource, /_GM_addValueChangeListener/);
 assert.match(relaySource, /_GM_removeValueChangeListener/);
 assert.match(relaySource, /setTimeout\(\(\) => \{/);
@@ -615,11 +1028,130 @@ const saveHandlerSource = sourceBetween(
 );
 assert.doesNotMatch(saveHandlerSource, /location\.reload\s*\(/);
 assert.match(saveHandlerSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
-assert.match(saveHandlerSource, /applyPanelSettingsNow\(\)/);
+assert.match(
+  saveHandlerSource,
+  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:/
+);
 assert.match(saveHandlerSource, /syncLauncherButton\(\)/);
 assert.match(saveHandlerSource, /closePanel\(\{ reset: false \}\)/);
 assert.match(saveHandlerSource, /reconcileHomeTimelineSetting\(/);
 assert.equal((source.match(/location\.reload\s*\(/g) || []).length, 1);
+assert.match(
+  source,
+  /const HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR\s*=\s*[\s\S]*?'data-__wb_hot_search_sidebar_overflow_spacing'/
+);
+assert.doesNotMatch(
+  source,
+  /HOT_SEARCH_SIDEBAR_AUTO_HEIGHT_ATTR|data-__wb_hot_search_sidebar_auto_height/
+);
+assert.doesNotMatch(
+  source,
+  /normalizeFirstVisibleSidebarGaps|alignFirstVisibleSidebarToComposer|data-__wb_sidebar_anchor_aligned|data-__wb_original_margin_top/
+);
+assert.doesNotMatch(
+  sourceBetween(
+    '  function hideSearchRelatedUsersPanel(',
+    '  // ---- Settings UI ----'
+  ),
+  /(?:panel|side|target)\.style\.(?:setProperty|removeProperty)|\.style\.(?:marginTop|marginBottom|transform)\s*=/
+);
+const settingsModuleSource = sourceBetween(
+  '/* === Settings v5: standard navigation + UID management === */',
+  '/* === /Settings v5 === */'
+);
+assert.doesNotMatch(
+  settingsModuleSource,
+  /\binjectCSSWhenReady\s*\(/,
+  'Settings must not call helpers outside its IIFE before launcher initialization'
+);
+assert.doesNotMatch(
+  sourceBetween('  function ensureStyles() {', '  function githubIconMarkup() {'),
+  /height:\s*auto\s*!important/
+);
+assert.match(
+  sourceBetween('  function ensureStyles() {', '  function githubIconMarkup() {'),
+  /HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR[\s\S]*?::after/
+);
+const restoreHotSearchSidebarLayoutSource = sourceBetween(
+  '  function restoreHotSearchSidebarOverflowSpacing(rail) {',
+  '  function syncHotSearchSidebarLayout() {'
+);
+assert.match(
+  restoreHotSearchSidebarLayoutSource,
+  /rail\.style\.removeProperty\(HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY\)/
+);
+assert.match(
+  restoreHotSearchSidebarLayoutSource,
+  /rail\.removeAttribute\(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR\)/
+);
+const hotSearchSidebarLayoutSource = sourceBetween(
+  '  function syncHotSearchSidebarLayout() {',
+  '  function promoteHiddenSidebarShells('
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /const targetRailOverflow = new Map\(\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /if \(hotSearchSidebarOverflowSpacingActive && !CFG\.hideHotSearch\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /side\.closest\('\.rightSide, \[class\*="_sideBox_"\]'\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /while \(shell\.parentElement && shell\.parentElement !== rail\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /if \(shell\.parentElement !== rail\) return;/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /document\.querySelectorAll\(markedSelector\)[\s\S]*?!targetRailOverflow\.has\(rail\)[\s\S]*?restoreHotSearchSidebarOverflowSpacing\(rail\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /Math\.ceil\(shell\.scrollHeight - shell\.clientHeight\)/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /rail\.style\.setProperty\([\s\S]*?HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY,[\s\S]*?`\$\{overflowHeight\}px`/
+);
+assert.match(
+  hotSearchSidebarLayoutSource,
+  /rail\.setAttribute\(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR, '1'\)/
+);
+assert.doesNotMatch(
+  hotSearchSidebarLayoutSource,
+  /shell\.style\.(?:height|minHeight|maxHeight)|height:\s*auto/
+);
+assert.match(
+  sourceBetween('  function hidePanels(', '  function restoreManagedPanels()'),
+  /hideSearchHotBand\(root\);[\s\S]*?syncHotSearchSidebarLayout\(\);/
+);
+const applyPanelSettingsSource = sourceBetween(
+  '  function applyPanelSettingsNow(options = {}) {',
+  '  function queuePanelRefresh('
+);
+assert.match(
+  applyPanelSettingsSource,
+  /if \(options\.restoredHotSearch\)[\s\S]*?hotSearchSidebarOverflowSpacingActive = true/
+);
+assert.match(
+  applyPanelSettingsSource,
+  /if \(CFG\.hideHotSearch\)[\s\S]*?hotSearchSidebarOverflowSpacingActive = false/
+);
+assert.match(
+  saveHandlerSource,
+  /const previousHotSearchHidden = CFG\.hideHotSearch === true/
+);
+assert.match(
+  saveHandlerSource,
+  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:\s*previousHotSearchHidden && CFG\.hideHotSearch === false/
+);
 const nativeHomeSource = sourceBetween(
   '  function openNativeHomeTimeline() {',
   '  function openLatestHomeTimeline() {'
@@ -739,16 +1271,7 @@ vm.runInContext(
   context
 );
 vm.runInContext(
-  sourceBetween(
-    '  function classifyInterceptedRequest(url) {',
-    '  // 微博新版 Axios 依赖原生网络对象的身份与完整生命周期。'
-  ),
-  context
-);
-vm.runInContext(
   `globalThis.testAPI = {
-    classifyInterceptedRequest,
-    createCompatibleJSONResponse,
     isFilterableContentURL,
     transformContentResponseData,
   };`,
@@ -832,37 +1355,15 @@ assert.equal(
   ),
   true
 );
-const unreadTimelineRequest = testAPI.classifyInterceptedRequest(
-  'https://weibo.com/ajax/feed/unreadfriendstimeline'
-);
-assert.equal(unreadTimelineRequest.unreadTimeline, true);
-assert.equal(unreadTimelineRequest.timelinePagination, false);
-assert.equal(unreadTimelineRequest.filterContent, false);
-assert.equal(unreadTimelineRequest.relevant, false);
-const unreadTimelinePageRequest = testAPI.classifyInterceptedRequest(
-  'https://weibo.com/ajax/feed/unreadfriendstimeline?max_id=123&count=15'
-);
-assert.equal(unreadTimelinePageRequest.timelinePagination, true);
-assert.equal(unreadTimelinePageRequest.filterContent, false);
-assert.equal(unreadTimelinePageRequest.relevant, false);
-const friendsTimelineRequest = testAPI.classifyInterceptedRequest(
-  'https://weibo.com/ajax/feed/friendstimeline'
-);
-assert.equal(friendsTimelineRequest.filterContent, false);
-assert.equal(friendsTimelineRequest.relevant, false);
 assert.doesNotMatch(source, /EMPTY_UNREAD_TIMELINE_RESPONSE/);
 assert.doesNotMatch(
   source,
   /timelineDefault\.value\s*&&\s*request\.unreadTimeline/
 );
-assert.match(source, /const ENABLE_PAGE_NETWORK_INTERCEPTION = false/);
-assert.match(
-  source,
-  /if \(ENABLE_PAGE_NETWORK_INTERCEPTION\) \{[\s\S]*?window\.fetch\s*=[\s\S]*?XMLHttpRequest\.prototype\.send\s*=[\s\S]*?window\.WebSocket\s*=/
-);
-assert.match(source, /TIMELINE_PAGINATION_MIN_INTERVAL_MS = 1100/);
-assert.match(source, /sendNativeXHRWithTimelinePacing\(this, body, request\)/);
-assert.match(source, /XMLHttpRequest\.prototype\.abort = function/);
+assert.doesNotMatch(source, /ENABLE_PAGE_NETWORK_INTERCEPTION/);
+assert.doesNotMatch(source, /window\.fetch\s*=/);
+assert.doesNotMatch(source, /XMLHttpRequest\.prototype\.(?:open|send|abort)\s*=/);
+assert.doesNotMatch(source, /window\.WebSocket\s*=/);
 assert.equal(
   testAPI.isFilterableContentURL(
     'https://example.com/ajax/feed/hottimeline'
@@ -875,48 +1376,4 @@ assert.equal(
   ),
   false
 );
-assert.equal(
-  testAPI.classifyInterceptedRequest(
-    'https://example.com/ajax/statuses/filterUser'
-  ).relevant,
-  false
-);
-
-const original = new Response('{"ok":1}', {
-  status: 201,
-  headers: {
-    'content-encoding': 'gzip',
-    'content-length': '999',
-    'content-type': 'application/json',
-    'x-regression': 'preserved',
-  },
-});
-Object.defineProperties(original, {
-  redirected: { configurable: true, value: true },
-  type: { configurable: true, value: 'cors' },
-  url: {
-    configurable: true,
-    value: 'https://weibo.com/ajax/feed/hottimeline',
-  },
-});
-const rebuilt = testAPI.createCompatibleJSONResponse(original, {
-  ok: 1,
-  statuses: [],
-});
-assert.equal(rebuilt.status, 201);
-assert.equal(rebuilt.url, original.url);
-assert.equal(rebuilt.redirected, true);
-assert.equal(rebuilt.type, 'cors');
-assert.equal(rebuilt.headers.get('content-length'), null);
-assert.equal(rebuilt.headers.get('content-encoding'), null);
-assert.equal(rebuilt.headers.get('x-regression'), 'preserved');
-rebuilt
-  .json()
-  .then((data) => {
-    assert.deepEqual(data, { ok: 1, statuses: [] });
-    console.log('regression tests: PASS');
-  })
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
+console.log('regression tests: PASS');

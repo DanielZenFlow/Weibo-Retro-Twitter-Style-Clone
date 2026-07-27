@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.1.0
+// @version      2.2.0
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -16,7 +16,6 @@
 // @match        https://weibo.com/*
 // @match        https://www.weibo.com/*
 // @match        https://weibo.com/set/*
-// @match        http://s.weibo.com/*
 // @match        https://s.weibo.com/*
 // @grant        GM_getValue
 // @grant        GM_addStyle
@@ -42,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.1.0';
+  const SCRIPT_VERSION = '2.2.0';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -90,6 +89,12 @@
   };
   let wbConfigCacheSignature = null;
   let wbConfigCacheValue = null;
+
+  function isTrustedUserEvent(event) {
+    return !!event && event.isTrusted === true;
+  }
+
+  WB_INTERNAL.isTrustedUserEvent = isTrustedUserEvent;
 
   function isUnsafeObjectKey(key) {
     return key === '__proto__' || key === 'prototype' || key === 'constructor';
@@ -278,7 +283,21 @@
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['style', 'class'],
+        attributeFilter: [
+          'style',
+          'class',
+          'href',
+          'data-user-id',
+          'data-user-card',
+          'data-usercard',
+          'data-usercard-mid',
+          'data-uid',
+          'uid',
+          'usercard',
+          'nick-name',
+          'title',
+          'aria-label',
+        ],
       });
     }
 
@@ -596,12 +615,20 @@
         resolve(confirmed);
       };
 
-      cancelButton.addEventListener('click', () => finish(false));
-      confirmButton.addEventListener('click', () => finish(true));
+      cancelButton.addEventListener('click', (event) => {
+        if (!isTrustedUserEvent(event)) return;
+        finish(false);
+      });
+      confirmButton.addEventListener('click', (event) => {
+        if (!isTrustedUserEvent(event)) return;
+        finish(true);
+      });
       overlay.addEventListener('click', (event) => {
+        if (!isTrustedUserEvent(event)) return;
         if (event.target === overlay) finish(false);
       });
       overlay.addEventListener('keydown', (event) => {
+        if (!isTrustedUserEvent(event)) return;
         if (event.key === 'Escape') {
           event.preventDefault();
           finish(false);
@@ -929,6 +956,7 @@
   // === 本地屏蔽列表与新浪微博官方黑名单同步 ===
   const UID_KEY = 'WB_BL_list'; // 本地存 UID
   const UID_EXCLUSION_KEY = 'WB_BL_local_exclusions';
+  const UID_MUTATION_LOCK_KEY = 'WB_BL_mutation_lock_v1';
   const OFFICIAL_BLOCK_REQUEST_KEY = 'WB_BL_official_block_request';
   const OFFICIAL_BLOCK_RESPONSE_KEY = 'WB_BL_official_block_response';
   const OFFICIAL_BLOCK_RELAY_PARAM = 'wb_retro_official_block';
@@ -949,6 +977,9 @@
   })();
   const BLOCKED_CONTENT_HIDE_ATTR = 'data-__wb_bl_hidden_by_userscript';
   const BLOCKED_CONTENT_UID_ATTR = 'data-__wb_bl_hidden_uid';
+  const BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR =
+    'data-__wb_bl_original_aria_hidden';
+  const BLOCKED_CONTENT_ARIA_ABSENT = '__wb_absent__';
   const BLOCKED_CONTENT_HIDE_SELECTOR = `[${BLOCKED_CONTENT_HIDE_ATTR}]`;
   const HIDDEN_AD_ATTR = 'data-__wb_ad_hidden_by_userscript';
   const HIDDEN_AD_SELECTOR = `[${HIDDEN_AD_ATTR}]`;
@@ -968,6 +999,10 @@
     '[class*="MiniPlayer"]',
     '[class*="_miniPlayer_"]',
   ].join(',');
+  const FLOATING_VIDEO_SUPPRESS_ATTR =
+    'data-__wb_floating_video_suppressed_by_userscript';
+  const FLOATING_VIDEO_ORIGINAL_ARIA_ATTR =
+    'data-__wb_floating_video_original_aria_hidden';
   const EXPLICIT_AD_SELECTOR = [
     '[data-ad-id]',
     '[data-adid]',
@@ -990,23 +1025,9 @@
     '[class*="promoted"]',
     '[class*="Promoted"]',
   ].join(',');
-  const COMPACTED_VIRTUAL_ITEM_ATTR = 'data-__wb_compacted_virtual_item';
-  const COMPACTED_TOP_ITEM_ATTR = 'data-__wb_compacted_top_item';
-  const NATIVE_HIDDEN_VIRTUAL_GAP_ATTR =
-    'data-__wb_native_hidden_virtual_gap';
-  const COMPACTED_VIRTUAL_WRAPPER_ATTR =
-    'data-__wb_compacted_virtual_wrapper';
   const NATIVE_PAGINATION_GUARD_ATTR =
     'data-__wb_native_pagination_guard';
   const NATIVE_PAGINATION_GUARD_PX = 192;
-  const ORIGINAL_TRANSLATE_Y_ATTR = 'data-__wb_original_translate_y';
-  const ORIGINAL_TOP_ATTR = 'data-__wb_original_top';
-  const ORIGINAL_LAYOUT_MODE_ATTR = 'data-__wb_original_layout_mode';
-  const ORIGINAL_TRANSFORM_STYLE_ATTR = 'data-__wb_original_transform_style';
-  const ORIGINAL_TOP_STYLE_ATTR = 'data-__wb_original_top_style';
-  const ORIGINAL_SLOT_HEIGHT_ATTR = 'data-__wb_original_slot_height';
-  const ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR =
-    'data-__wb_original_wrapper_min_height';
   const VIRTUAL_VIEW_SELECTOR = [
     '.vue-recycle-scroller__item-view',
     '[class*="vue-recycle-scroller__item-view"]',
@@ -1025,40 +1046,6 @@
     '[style*="matrix("]',
     '[style*="top:"]',
   ].join(',');
-  const VIRTUAL_COMPACTION_RUNTIME = (() => {
-    let wrapperStates = new WeakMap();
-    const stats = {
-      runs: 0,
-      resets: 0,
-      lastWrapperCount: 0,
-      lastHiddenSlotCount: 0,
-    };
-    return Object.freeze({
-      stateFor(wrapper) {
-        let state = wrapperStates.get(wrapper);
-        if (!state) {
-          state = { hiddenSlots: new Map() };
-          wrapperStates.set(wrapper, state);
-        }
-        return state;
-      },
-      delete(wrapper) {
-        wrapperStates.delete(wrapper);
-      },
-      reset() {
-        wrapperStates = new WeakMap();
-        stats.resets++;
-      },
-      recordRun(wrapperCount, hiddenSlotCount) {
-        stats.runs++;
-        stats.lastWrapperCount = wrapperCount;
-        stats.lastHiddenSlotCount = hiddenSlotCount;
-      },
-      getStats() {
-        return { ...stats };
-      },
-    });
-  })();
   const MAX_418 = 3; // 连续 418 次数上限
   const MAX_FULL_SYNC_PAGES = 5000;
   const MAIN_WEIBO_HOSTS = new Set(['weibo.com', 'www.weibo.com']);
@@ -1092,6 +1079,155 @@
       signal?.addEventListener('abort', abort, { once: true });
     });
   }
+
+  function parseStoredUIDSet(raw) {
+    return new Set(
+      String(raw || '')
+        .split(',')
+        .map((uid) => uid.trim())
+        .filter((uid) => /^\d{5,}$/.test(uid))
+    );
+  }
+
+  async function withLocalBLMutationLock(task) {
+    const owner = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const acquireDeadline = Date.now() + 6000;
+    const leaseDuration = 4000;
+
+    while (Date.now() < acquireDeadline) {
+      const now = Date.now();
+      const current = _GM_getValue(UID_MUTATION_LOCK_KEY, null);
+      const currentExpiresAt = Number(current?.expiresAt || 0);
+      if (!current?.owner || currentExpiresAt <= now) {
+        _GM_setValue(UID_MUTATION_LOCK_KEY, {
+          owner,
+          expiresAt: now + leaseDuration,
+        });
+        await sleep(18);
+        const confirmed = _GM_getValue(UID_MUTATION_LOCK_KEY, null);
+        if (confirmed?.owner === owner) {
+          try {
+            return task();
+          } finally {
+            const latest = _GM_getValue(UID_MUTATION_LOCK_KEY, null);
+            if (latest?.owner === owner) {
+              if (_GM_deleteValue) _GM_deleteValue(UID_MUTATION_LOCK_KEY);
+              else _GM_setValue(UID_MUTATION_LOCK_KEY, null);
+            }
+          }
+        }
+      }
+      await sleep(24 + Math.floor(Math.random() * 24));
+    }
+    throw new Error('本地屏蔽列表正被其他标签页修改，请稍后重试');
+  }
+
+  async function mutateLocalBLStorage(options = {}) {
+    const add = new Set(
+      Array.from(options.add || [])
+        .map((uid) => String(uid || '').trim())
+        .filter((uid) => /^\d{5,}$/.test(uid))
+    );
+    const remove = new Set(
+      Array.from(options.remove || [])
+        .map((uid) => String(uid || '').trim())
+        .filter((uid) => /^\d{5,}$/.test(uid))
+    );
+    const replacement =
+      options.replace === undefined
+        ? null
+        : new Set(
+            Array.from(options.replace || [])
+              .map((uid) => String(uid || '').trim())
+              .filter((uid) => /^\d{5,}$/.test(uid))
+          );
+
+    return withLocalBLMutationLock(() => {
+      const stored = parseStoredUIDSet(_GM_getValue(UID_KEY, ''));
+      const exclusions = parseStoredUIDSet(
+        _GM_getValue(UID_EXCLUSION_KEY, '')
+      );
+      const current = new Set(
+        [...stored].filter((uid) => !exclusions.has(uid))
+      );
+      const beforeSize = current.size;
+
+      if (replacement) {
+        current.forEach((uid) => {
+          if (!replacement.has(uid)) exclusions.add(uid);
+        });
+        replacement.forEach((uid) => exclusions.delete(uid));
+        stored.clear();
+        replacement.forEach((uid) => stored.add(uid));
+      } else {
+        remove.forEach((uid) => {
+          stored.delete(uid);
+          exclusions.add(uid);
+        });
+        add.forEach((uid) => {
+          exclusions.delete(uid);
+          stored.add(uid);
+        });
+      }
+
+      exclusions.forEach((uid) => stored.delete(uid));
+      _GM_setValue(UID_KEY, Array.from(stored).join(','));
+      _GM_setValue(UID_EXCLUSION_KEY, Array.from(exclusions).join(','));
+      const next = new Set(stored);
+      replaceSetContents(BL, next);
+      return {
+        size: next.size,
+        added: [...next].filter((uid) => !current.has(uid)).length,
+        removed: [...current].filter((uid) => !next.has(uid)).length,
+        beforeSize,
+      };
+    });
+  }
+
+  function rebaseLocalBLExclusions(base, working, latest) {
+    const rebased = new Set(working);
+    latest.forEach((uid) => {
+      if (!base.has(uid)) rebased.add(uid);
+    });
+    base.forEach((uid) => {
+      if (!latest.has(uid)) rebased.delete(uid);
+    });
+    return rebased;
+  }
+
+  async function commitSyncedLocalBL(
+    workingSet,
+    baseExclusions,
+    workingExclusions
+  ) {
+    return withLocalBLMutationLock(() => {
+      const latestExclusions = parseStoredUIDSet(
+        _GM_getValue(UID_EXCLUSION_KEY, '')
+      );
+      const finalExclusions = rebaseLocalBLExclusions(
+        baseExclusions,
+        workingExclusions,
+        latestExclusions
+      );
+      const merged = parseStoredUIDSet(_GM_getValue(UID_KEY, ''));
+      workingSet.forEach((uid) => {
+        if (!finalExclusions.has(uid)) merged.add(uid);
+      });
+      finalExclusions.forEach((uid) => merged.delete(uid));
+      _GM_setValue(UID_KEY, Array.from(merged).join(','));
+      _GM_setValue(
+        UID_EXCLUSION_KEY,
+        Array.from(finalExclusions).join(',')
+      );
+      replaceSetContents(BL, merged);
+      return new Set(merged);
+    });
+  }
+
+  WB_INTERNAL.blStore = Object.freeze({
+    mutate: mutateLocalBLStorage,
+  });
+
   const canUseSettingApi = () => MAIN_WEIBO_HOSTS.has(location.hostname);
   const SETTING_API_HOST_ERROR =
     '请在 weibo.com 主站页面同步新浪微博官方黑名单';
@@ -1109,6 +1245,34 @@
   function normalizeSyncCursor(value) {
     const cursor = String(value ?? '').trim();
     return !cursor || cursor === '0' ? '' : cursor;
+  }
+
+  function parseFilteredUsersResponse(data, operationLabel) {
+    const label = String(operationLabel || '同步');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error(`新浪微博官方黑名单${label}响应格式无效`);
+    }
+    if (data.ok !== 1 && data.ok !== true) {
+      const message =
+        typeof data.msg === 'string' && data.msg.trim()
+          ? `：${data.msg.trim()}`
+          : '';
+      throw new Error(`新浪微博官方黑名单${label}失败${message}`);
+    }
+    if (!Array.isArray(data.card_group)) {
+      throw new Error(`新浪微博官方黑名单${label}响应缺少名单数据`);
+    }
+    if (
+      data.next_cursor !== undefined &&
+      data.next_cursor !== null &&
+      !['string', 'number'].includes(typeof data.next_cursor)
+    ) {
+      throw new Error(`新浪微博官方黑名单${label}响应游标无效`);
+    }
+    return {
+      items: data.card_group,
+      nextCursor: normalizeSyncCursor(data.next_cursor),
+    };
   }
 
   function buildFilteredUsersURL(page, cursor) {
@@ -1160,14 +1324,15 @@
       strikes = 0;
       const data = await res.json();
       throwIfSyncAborted(signal);
-      (data.card_group || []).forEach((item) => {
+      const parsed = parseFilteredUsersResponse(data, '完整同步');
+      parsed.items.forEach((item) => {
         const uid = extractUIDFromScheme(item);
         if (!uid) return;
         exclusions.delete(uid);
         list.push(uid);
       });
       onProgress?.({ currentPage: page, loaded: list.length });
-      const nextCursor = normalizeSyncCursor(data.next_cursor);
+      const nextCursor = parsed.nextCursor;
       if (!nextCursor) break;
       if (seenCursors.has(nextCursor)) {
         throw new Error('新浪微博官方黑名单重复返回同一游标，完整同步已停止');
@@ -1178,15 +1343,11 @@
       await sleep(THROTTLE_MS, signal);
     }
     throwIfSyncAborted(signal);
-    const finalExclusions = persistRebasedLocalBLExclusions(
+    const merged = await commitSyncedLocalBL(
+      new Set(list),
       baseExclusions,
       exclusions
     );
-    const merged = readLocalBLCache();
-    list.forEach((uid) => {
-      if (!finalExclusions.has(uid)) merged.add(uid);
-    });
-    _GM_setValue(UID_KEY, Array.from(merged).join(','));
     return merged;
   }
 
@@ -1211,18 +1372,16 @@
     }
     const data = await res.json();
     throwIfSyncAborted(signal);
+    const parsed = parseFilteredUsersResponse(data, '增量同步');
     const workingSet = new Set(set);
     const baseExclusions = readLocalBLExclusions();
     const exclusions = new Set(baseExclusions);
     const respectExclusions = options.silent === true;
-    let exclusionsChanged = false;
     let added = 0;
-    (data.card_group || []).forEach((item) => {
+    parsed.items.forEach((item) => {
       const uid = extractUIDFromScheme(item);
       if (!uid || (respectExclusions && exclusions.has(uid))) return;
-      if (!respectExclusions && exclusions.delete(uid)) {
-        exclusionsChanged = true;
-      }
+      if (!respectExclusions) exclusions.delete(uid);
       if (!workingSet.has(uid)) {
         workingSet.add(uid);
         added++;
@@ -1231,15 +1390,15 @@
     onProgress?.({
       currentPage: 1,
       targetPages: 1,
-      loaded: (data.card_group || []).length,
+      loaded: parsed.items.length,
     });
     throwIfSyncAborted(signal);
-    if (exclusionsChanged) {
-      persistRebasedLocalBLExclusions(baseExclusions, exclusions);
-    }
-    const { merged, changed } = mergeWithLocalBLCache(workingSet);
+    const merged = await commitSyncedLocalBL(
+      workingSet,
+      baseExclusions,
+      exclusions
+    );
     replaceSetContents(set, merged);
-    if (added || changed) _GM_setValue(UID_KEY, Array.from(set).join(','));
     return set;
   }
 
@@ -1261,7 +1420,6 @@
     const workingSet = new Set(set);
     const baseExclusions = readLocalBLExclusions();
     const exclusions = new Set(baseExclusions);
-    let exclusionsChanged = false;
     const seenCursors = new Set();
     while (page <= pages) {
       throwIfSyncAborted(signal);
@@ -1292,10 +1450,11 @@
       strikes = 0;
       const data = await res.json();
       throwIfSyncAborted(signal);
-      (data.card_group || []).forEach((item) => {
+      const parsed = parseFilteredUsersResponse(data, '分页同步');
+      parsed.items.forEach((item) => {
         const uid = extractUIDFromScheme(item);
         if (!uid) return;
-        if (exclusions.delete(uid)) exclusionsChanged = true;
+        exclusions.delete(uid);
         if (!workingSet.has(uid)) {
           workingSet.add(uid);
           added++;
@@ -1306,7 +1465,7 @@
         targetPages: pages,
         loaded: added,
       });
-      const nextCursor = normalizeSyncCursor(data.next_cursor);
+      const nextCursor = parsed.nextCursor;
       if (!nextCursor) break;
       if (seenCursors.has(nextCursor)) {
         throw new Error('新浪微博官方黑名单重复返回同一游标，分页同步已停止');
@@ -1317,12 +1476,12 @@
       await sleep(THROTTLE_MS, signal);
     }
     throwIfSyncAborted(signal);
-    if (exclusionsChanged) {
-      persistRebasedLocalBLExclusions(baseExclusions, exclusions);
-    }
-    const { merged, changed } = mergeWithLocalBLCache(workingSet);
+    const merged = await commitSyncedLocalBL(
+      workingSet,
+      baseExclusions,
+      exclusions
+    );
     replaceSetContents(set, merged);
-    if (added || changed) _GM_setValue(UID_KEY, Array.from(set).join(','));
     return added;
   }
 
@@ -1349,53 +1508,14 @@
     );
   }
 
-  function persistLocalBLExclusions(exclusions) {
-    _GM_setValue(UID_EXCLUSION_KEY, Array.from(exclusions).join(','));
-  }
-
-  function setsHaveSameValues(left, right) {
-    return left.size === right.size && [...left].every((item) => right.has(item));
-  }
-
-  function persistRebasedLocalBLExclusions(base, working) {
-    const latest = readLocalBLExclusions();
-    const rebased = new Set(working);
-
-    latest.forEach((uid) => {
-      if (!base.has(uid)) rebased.add(uid);
-    });
-    base.forEach((uid) => {
-      if (!latest.has(uid)) rebased.delete(uid);
-    });
-
-    if (!setsHaveSameValues(latest, rebased)) {
-      persistLocalBLExclusions(rebased);
-    }
-    return rebased;
-  }
-
   function replaceSetContents(target, source) {
     target.clear();
     source.forEach((uid) => target.add(uid));
     return target;
   }
 
-  function mergeWithLocalBLCache(set) {
-    const merged = readLocalBLCache();
-    const before = merged.size;
-    const exclusions = readLocalBLExclusions();
-    set.forEach((uid) => {
-      if (!exclusions.has(uid)) merged.add(uid);
-    });
-    return {
-      merged,
-      changed: merged.size !== before,
-    };
-  }
-
   function restoreBlockedContentHideState(root = document) {
     if (!root || !root.querySelectorAll) return;
-    clearVirtualCompactionState(root);
     const nodes = [];
     if (root instanceof Element && root.matches(BLOCKED_CONTENT_HIDE_SELECTOR)) {
       nodes.push(root);
@@ -1592,7 +1712,6 @@
       console.warn('[WB-BL] 新浪微博官方黑名单增量同步失败，继续使用本地屏蔽列表', e);
     }
     updateRuntimeStyles();
-    clearVirtualCompactionState(document);
     refreshBlockedDOMAfterBLChange({
       restoreHidden: false,
       nudgeLayout: false,
@@ -1761,7 +1880,7 @@
       html[${RELATIONSHIP_PAGE_ATTR}="1"] div${BLOCKED_CONTENT_HIDE_SELECTOR}:not(.woo-box-flex):not([class*="woo-box-flex"]) {
         display: block !important;
       }
-      ${FLOATING_VIDEO_PLAYER_SELECTOR} {
+      [${FLOATING_VIDEO_SUPPRESS_ATTR}="1"] {
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
@@ -2208,34 +2327,11 @@
     '[node-type="feed_list_item"]',
   ].join(',');
 
-  function persistBL() {
-    _GM_setValue(UID_KEY, [...BL].join(','));
-  }
-
-  function addUIDToLocalBL(uid) {
+  async function addUIDToLocalBL(uid) {
     const id = String(uid || '').trim();
     if (!/^\d{5,}$/.test(id)) return false;
-    const exclusions = readLocalBLExclusions();
-    if (exclusions.delete(id)) persistLocalBLExclusions(exclusions);
-    replaceSetContents(BL, readLocalBLCache());
-    const existed = BL.has(id);
-    BL.add(id);
-    if (!existed) persistBL();
-    return !existed;
-  }
-
-  function removeUIDFromLocalBL(uid) {
-    const id = String(uid || '').trim();
-    if (!/^\d{5,}$/.test(id)) return false;
-    replaceSetContents(BL, readLocalBLCache());
-    const existed = BL.delete(id);
-    const exclusions = readLocalBLExclusions();
-    if (!exclusions.has(id)) {
-      exclusions.add(id);
-      persistLocalBLExclusions(exclusions);
-    }
-    if (existed) persistBL();
-    return existed;
+    const result = await mutateLocalBLStorage({ add: [id] });
+    return result.added > 0;
   }
 
   function parseUIDFromRequestBody(body) {
@@ -2305,6 +2401,8 @@
     'a[href*="//weibo.com/u/"]',
     'a[href*="//weibo.com/p/100505"]',
     'a[href*="//weibo.com/n/"]',
+    '.woo-avatar-main',
+    '.woo-avatar-img',
   ].join(',');
   const USER_CONTEXT_NAME_TARGET_SELECTOR = [
     '.card-feed .content > .info a.name[href]',
@@ -2320,6 +2418,22 @@
     '[class*="_name_"][data-user-card]',
     '[class*="_name_"][data-usercard]',
     'main [class*="_name_"]',
+    '[usercard^="name=@"]',
+    '[data-usercard^="name=@"]',
+    '[data-user-card^="name=@"]',
+    'header a[href=""]',
+    'header a:not([href])',
+  ].join(',');
+  const USER_CONTEXT_AUTHOR_SCOPE_SELECTOR = [
+    'header',
+    '.card-feed .content > .info',
+    '.content > .info',
+    '.card-user-c',
+    '.card-user-b',
+    '[class*="_author_"]',
+    '[class*="_userInfo_"]',
+    '[class*="_userinfo_"]',
+    '[class*="_user-info_"]',
   ].join(',');
 
   function getUserNameLabel(el) {
@@ -2354,13 +2468,6 @@
 
     const label = getUserNameLabel(candidate);
     if (!label) return null;
-    if (
-      candidate.matches('a') &&
-      !candidate.getAttribute('href') &&
-      !firstDOMUID(candidate)
-    ) {
-      return null;
-    }
     return candidate;
   }
 
@@ -2378,6 +2485,7 @@
     };
 
     addDirectUID(el.getAttribute('data-user-id'));
+    addDirectUID(el.getAttribute('data-user-card'));
     addDirectUID(el.getAttribute('data-usercard-mid'));
     addDirectUID(el.getAttribute('data-uid'));
     addDirectUID(el.getAttribute('uid'));
@@ -2414,10 +2522,116 @@
     const href = el.getAttribute('href');
     addMatches(href, /\/u\/(\d{5,})/g);
     addMatches(href, /\/p\/100505(\d{5,})/g);
+    addMatches(href, /^\/(\d{5,})(?:[/?#]|$)/g);
     addMatches(href, /weibo\.com\/(\d{5,})(?:[/?#]|$)/g);
     addMatches(href, /(?:[?&#])(?:uid|ouid)=(\d{5,})/g);
 
     return uids;
+  }
+
+  function collectScopedUserContextUIDs(scope) {
+    const candidates = [];
+    const seenElements = new Set();
+    const addCandidate = (candidate) => {
+      if (!(candidate instanceof Element) || seenElements.has(candidate)) {
+        return;
+      }
+      seenElements.add(candidate);
+      candidates.push(candidate);
+    };
+
+    addCandidate(scope);
+    scope
+      ?.querySelectorAll?.(`${DOM_UID_SELECTOR}, a[href]`)
+      .forEach(addCandidate);
+
+    const records = [];
+    candidates.forEach((candidate) => {
+      const labels = [
+        getNameFromElementAttributes(candidate),
+        getOwnDOMText(candidate),
+        candidate.getAttribute?.('alt'),
+      ];
+      const link = candidate.closest?.('a');
+      if (link && link !== candidate) {
+        labels.push(
+          getNameFromElementAttributes(link),
+          getOwnDOMText(link)
+        );
+      }
+      const labelledChild = candidate.querySelector?.(
+        ':scope > [title], :scope > [aria-label]'
+      );
+      if (labelledChild) {
+        labels.push(
+          getNameFromElementAttributes(labelledChild),
+          getOwnDOMText(labelledChild)
+        );
+      }
+      extractDOMUIDs(candidate).forEach((uid) => {
+        records.push({ uid, labels });
+      });
+    });
+    return records;
+  }
+
+  function chooseScopedUserContextUID(
+    records,
+    expectedName = '',
+    allowUniqueFallback = false
+  ) {
+    const normalizedExpectedName = cleanUserDisplayName(expectedName);
+    if (normalizedExpectedName) {
+      const matchingUIDs = new Set();
+      records.forEach(({ uid, labels = [] }) => {
+        if (
+          labels.some(
+            (label) =>
+              cleanUserDisplayName(label) === normalizedExpectedName
+          )
+        ) {
+          matchingUIDs.add(uid);
+        }
+      });
+      if (matchingUIDs.size === 1) return [...matchingUIDs][0];
+    }
+
+    const scopedUIDs = new Set(records.map(({ uid }) => uid));
+    if (allowUniqueFallback && scopedUIDs.size === 1) {
+      return [...scopedUIDs][0];
+    }
+    return '';
+  }
+
+  function getScopedUserContextUID(target, expectedName = '') {
+    if (!(target instanceof Element)) return '';
+    const scopes = [];
+    const addScope = (scope, allowUniqueFallback) => {
+      if (!(scope instanceof Element)) return;
+      const existing = scopes.find((item) => item.scope === scope);
+      if (existing) {
+        existing.allowUniqueFallback ||= allowUniqueFallback;
+      } else {
+        scopes.push({ scope, allowUniqueFallback });
+      }
+    };
+
+    addScope(target.closest(USER_CONTEXT_AUTHOR_SCOPE_SELECTOR), true);
+    addScope(target.closest(DOM_COMMENT_ROOT_SELECTOR), false);
+    addScope(target.closest('[role="listitem"], li'), false);
+
+    for (const { scope, allowUniqueFallback } of scopes) {
+      const records = collectScopedUserContextUIDs(scope);
+      if (!records.length) continue;
+
+      const resolvedUID = chooseScopedUserContextUID(
+        records,
+        expectedName,
+        allowUniqueFallback
+      );
+      if (resolvedUID) return resolvedUID;
+    }
+    return '';
   }
 
   function normDOMText(s) {
@@ -2446,7 +2660,6 @@
       .forEach((scroller) =>
         scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR)
       );
-    clearVirtualCompactionState(document);
     const nodes = new Set();
     const collect = (scope) => {
       if (!scope || !scope.querySelectorAll) return;
@@ -2464,10 +2677,6 @@
     if (root !== document) collect(document);
     nodes.forEach((el) => {
       clearOwnBlockedContentHideState(el);
-      const item = el.closest?.(VIRTUAL_VIEW_SELECTOR);
-      if (item) clearVirtualItemCompaction(item);
-      const wrapper = el.closest?.(VIRTUAL_WRAPPER_SELECTOR);
-      if (wrapper) clearVirtualWrapperCompaction(wrapper);
     });
     if (options.reschedule === false) return;
     const rerun = () =>
@@ -2481,14 +2690,17 @@
     el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
     el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
     el.removeAttribute(COMMENT_CONTENT_ROOT_ATTR);
-    el.removeAttribute('aria-hidden');
-    el.style.removeProperty('display');
-    el.style.removeProperty('height');
-    el.style.removeProperty('min-height');
-    el.style.removeProperty('margin');
-    el.style.removeProperty('padding');
-    el.style.removeProperty('border');
-    el.style.removeProperty('overflow');
+    const originalAria = el.getAttribute(BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR);
+    if (originalAria === BLOCKED_CONTENT_ARIA_ABSENT) {
+      el.removeAttribute('aria-hidden');
+    } else if (originalAria !== null) {
+      el.setAttribute('aria-hidden', originalAria);
+    } else if (el.getAttribute('aria-hidden') === 'true') {
+      // Compatibility with cards marked by builds that predate exact ARIA
+      // restoration. Never remove a non-plugin value.
+      el.removeAttribute('aria-hidden');
+    }
+    el.removeAttribute(BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR);
   }
 
   function clearBlockedContentHideState(root) {
@@ -2866,6 +3078,14 @@
     return el instanceof Element && !!el.closest(COMMENT_SURFACE_SELECTOR);
   }
 
+  function hasUIDOutsideCommentRoots(root, uid) {
+    const id = String(uid || '').trim();
+    if (!(root instanceof Element) || !/^\d{5,}$/.test(id)) return false;
+    return getElementsForUID(root, id).some(
+      (candidate) => !findCommentRootForUID(candidate, id)
+    );
+  }
+
   function findCommentRootForUID(el, uid) {
     if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
       return null;
@@ -2999,6 +3219,18 @@
     return hasFeedShellClass || isSingleChildShell || hasInlineLayoutReservation;
   }
 
+  function isEligibleVirtualScrollerItem(item) {
+    if (!(item instanceof Element)) return false;
+    if (
+      item.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
+      item.closest(FLOATING_VIDEO_PLAYER_SELECTOR)
+    ) {
+      return false;
+    }
+    const position = getComputedStyle(item).position;
+    return position !== 'fixed' && position !== 'sticky';
+  }
+
   function findHideShell(root) {
     if (!(root instanceof Element)) return null;
     const commentRoot = root.closest(DOM_COMMENT_ROOT_SELECTOR);
@@ -3058,25 +3290,6 @@
     return target;
   }
 
-  function setImportantStyleIfNeeded(el, prop, value) {
-    if (!(el instanceof Element)) return false;
-    if (
-      el.style.getPropertyValue(prop) === value &&
-      el.style.getPropertyPriority(prop) === 'important'
-    ) {
-      return false;
-    }
-    el.style.setProperty(prop, value, 'important');
-    return true;
-  }
-
-  function setStyleVarIfNeeded(el, prop, value) {
-    if (!(el instanceof Element)) return false;
-    if (el.style.getPropertyValue(prop) === value) return false;
-    el.style.setProperty(prop, value);
-    return true;
-  }
-
   function hideContentRoot(root, uid = '') {
     if (isRelationshipListPage()) {
       restoreHiddenRelationshipItems(document);
@@ -3098,10 +3311,15 @@
     ) {
       return false;
     }
-    rememberVirtualItemSlotHeight(target);
     rememberBlockedContentVideos(target);
     pauseVideosIn(target);
     prepareNativeTimelinePaginationGuard(target);
+    target.setAttribute(
+      BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR,
+      target.hasAttribute('aria-hidden')
+        ? target.getAttribute('aria-hidden') || ''
+        : BLOCKED_CONTENT_ARIA_ABSENT
+    );
     target.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
     const id = String(uid || '').trim();
     if (/^\d{5,}$/.test(id)) {
@@ -3116,9 +3334,11 @@
   let blockedVideoFingerprints = new Set();
   let floatingVideoSuppressFallback = false;
   let ignoredFloatingVideoPlayers = new WeakSet();
+  let floatingVideoRestoreTimer = 0;
 
   function isFloatingVideoSuppressActive() {
     if (Date.now() <= floatingVideoSuppressUntil) return true;
+    restoreSuppressedFloatingVideoPlayers(document);
     blockedVideoFingerprints = new Set();
     floatingVideoSuppressFallback = false;
     ignoredFloatingVideoPlayers = new WeakSet();
@@ -3181,30 +3401,6 @@
     return Array.from(new Set(nodes));
   }
 
-  function collectExplicitFloatingVideoPlayers(root = document) {
-    if (!root || !root.querySelectorAll) return [];
-    const nodes = [];
-    if (root instanceof Element && root.matches(FLOATING_VIDEO_PLAYER_SELECTOR)) {
-      nodes.push(root);
-    }
-    root
-      .querySelectorAll(FLOATING_VIDEO_PLAYER_SELECTOR)
-      .forEach((el) => nodes.push(el));
-    return Array.from(new Set(nodes));
-  }
-
-  function removeFloatingVideoPlayer(player) {
-    if (!(player instanceof Element)) return;
-    pauseVideosIn(player);
-    try {
-      player.remove();
-    } catch {
-      player.style.setProperty('display', 'none', 'important');
-      player.style.setProperty('visibility', 'hidden', 'important');
-      player.style.setProperty('pointer-events', 'none', 'important');
-    }
-  }
-
   function rememberExistingFloatingVideoPlayers() {
     ignoredFloatingVideoPlayers = new WeakSet();
     collectFloatingVideoPlayers(document).forEach((player) => {
@@ -3244,6 +3440,15 @@
     blockedVideoFingerprints = new Set(fingerprints);
     floatingVideoSuppressFallback = true;
     floatingVideoSuppressUntil = Date.now() + 5000;
+    clearTimeout(floatingVideoRestoreTimer);
+    floatingVideoRestoreTimer = setTimeout(() => {
+      floatingVideoRestoreTimer = 0;
+      floatingVideoSuppressUntil = 0;
+      restoreSuppressedFloatingVideoPlayers(document);
+      blockedVideoFingerprints = new Set();
+      floatingVideoSuppressFallback = false;
+      ignoredFloatingVideoPlayers = new WeakSet();
+    }, 5050);
   }
 
   function pauseVideosIn(root) {
@@ -3290,417 +3495,44 @@
     if (!isFloatingVideoSuppressActive()) return;
     collectFloatingVideoPlayers(root).forEach((player) => {
       if (!shouldSuppressFloatingVideoPlayer(player)) return;
-      removeFloatingVideoPlayer(player);
-    });
-  }
-
-  function removeWeiboFloatingVideoPlayers(root = document) {
-    const players = new Set([
-      ...collectExplicitFloatingVideoPlayers(root),
-      ...collectFloatingVideoPlayers(root),
-    ]);
-    players.forEach((player) => removeFloatingVideoPlayer(player));
-  }
-
-  function getTransformSource(el) {
-    if (!(el instanceof Element)) return '';
-    const inline = el.style?.transform || '';
-    if (inline) return inline;
-    if (el.hasAttribute(COMPACTED_VIRTUAL_ITEM_ATTR)) return '';
-    return getComputedStyle(el).transform || '';
-  }
-
-  function getTopSource(el) {
-    if (!(el instanceof Element)) return '';
-    const inline = el.style?.top || '';
-    if (inline) return inline;
-    if (el.hasAttribute(COMPACTED_TOP_ITEM_ATTR)) return '';
-    return getComputedStyle(el).top || '';
-  }
-
-  function parseTranslateYFromTransform(transform) {
-    const translateY = transform.match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
-    if (translateY) return Number(translateY[1]);
-    const translate3d = transform.match(
-      /translate3d\(\s*-?\d+(?:\.\d+)?px,\s*(-?\d+(?:\.\d+)?)px/i
-    );
-    if (translate3d) return Number(translate3d[1]);
-    const translate = transform.match(
-      /translate\(\s*-?\d+(?:\.\d+)?px,\s*(-?\d+(?:\.\d+)?)px/i
-    );
-    if (translate) return Number(translate[1]);
-    const matrix = transform.match(/matrix\(([^)]+)\)/);
-    if (matrix) {
-      const parts = matrix[1].split(',').map((part) => Number(part.trim()));
-      if (parts.length >= 6 && Number.isFinite(parts[5])) return parts[5];
-    }
-    return 0;
-  }
-
-  function parseTranslateY(el) {
-    return parseTranslateYFromTransform(getTransformSource(el));
-  }
-
-  function parseTranslateXFromTransform(transform) {
-    const translateX = transform.match(/translateX\((-?\d+(?:\.\d+)?)px\)/);
-    if (translateX) return Number(translateX[1]);
-    const translate3d = transform.match(
-      /translate3d\(\s*(-?\d+(?:\.\d+)?)px/i
-    );
-    if (translate3d) return Number(translate3d[1]);
-    const translate = transform.match(/translate\(\s*(-?\d+(?:\.\d+)?)px/i);
-    if (translate) return Number(translate[1]);
-    const matrix = transform.match(/matrix\(([^)]+)\)/);
-    if (matrix) {
-      const parts = matrix[1].split(',').map((part) => Number(part.trim()));
-      if (parts.length >= 6 && Number.isFinite(parts[4])) return parts[4];
-    }
-    return 0;
-  }
-
-  function getTranslateX(el) {
-    return parseTranslateXFromTransform(getTransformSource(el));
-  }
-
-  function usesTransformLayout(el) {
-    if (!(el instanceof Element)) return false;
-    const transform = getTransformSource(el);
-    return !!transform && transform !== 'none' && /translate|matrix/i.test(transform);
-  }
-
-  function parseTop(el) {
-    if (!(el instanceof Element)) return 0;
-    const top = getTopSource(el);
-    const match = String(top).match(/(-?\d+(?:\.\d+)?)px/);
-    return match ? Number(match[1]) : 0;
-  }
-
-  function usesTopLayout(el) {
-    if (!(el instanceof Element)) return false;
-    const top = getTopSource(el);
-    return /-?\d+(?:\.\d+)?px/.test(String(top));
-  }
-
-  function isEligibleVirtualScrollerItem(item) {
-    if (!(item instanceof Element)) return false;
-    if (
-      item.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
-      item.closest(FLOATING_VIDEO_PLAYER_SELECTOR)
-    ) {
-      return false;
-    }
-    const style = getComputedStyle(item);
-    if (style.position === 'fixed' || style.position === 'sticky') {
-      return false;
-    }
-    return true;
-  }
-
-  function isEligibleVirtualScrollerWrapper(wrapper) {
-    if (!(wrapper instanceof Element)) return false;
-    if (wrapper === document.body || wrapper === document.documentElement) {
-      return false;
-    }
-    if (
-      wrapper.matches(FLOATING_VIDEO_PLAYER_SELECTOR) ||
-      wrapper.closest(FLOATING_VIDEO_PLAYER_SELECTOR)
-    ) {
-      return false;
-    }
-    const style = getComputedStyle(wrapper);
-    return style.position !== 'fixed' && style.position !== 'sticky';
-  }
-
-  function getVirtualLayoutMode(item) {
-    if (usesTransformLayout(item)) return 'transform';
-    if (usesTopLayout(item)) return 'top';
-    return 'flow';
-  }
-
-  function isParkedVirtualItem(item, y) {
-    if (!(item instanceof Element)) return false;
-    const transform = getTransformSource(item);
-    return y <= -9000 || /translateY\(\s*-9999px\s*\)/i.test(transform);
-  }
-
-  function isNativeHiddenVirtualGap(item, y = null) {
-    if (!(item instanceof Element) || !item.matches(VIRTUAL_VIEW_SELECTOR)) {
-      return false;
-    }
-    if (item.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)) return false;
-
-    const style = getComputedStyle(item);
-    if (style.display !== 'none') return false;
-
-    const baseY = y === null ? getVirtualBaseY(item) : y;
-    if (!Number.isFinite(baseY) || isParkedVirtualItem(item, baseY)) {
-      return false;
-    }
-
-    const text = normDOMText(item.textContent);
-    if (!text) return false;
-
-    const wrapper = item.closest(VIRTUAL_WRAPPER_SELECTOR);
-    if (!wrapper) return false;
-
-    let parent = item.parentElement;
-    while (parent && parent !== wrapper) {
-      if (getComputedStyle(parent).display === 'none') return false;
-      parent = parent.parentElement;
-    }
-    if (getComputedStyle(wrapper).display === 'none') return false;
-
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const expectedTop = wrapperRect.top + baseY;
-    const viewport = Math.max(window.innerHeight || 0, 1);
-    return expectedTop > -viewport && expectedTop < viewport * 2;
-  }
-
-  function hasNativeHiddenVirtualGaps(root = document) {
-    if (!root || !root.querySelectorAll) return false;
-    const items = [];
-    if (root instanceof Element) {
-      if (root.matches(VIRTUAL_VIEW_SELECTOR)) items.push(root);
-      root
-        .querySelectorAll(VIRTUAL_VIEW_SELECTOR)
-        .forEach((item) => items.push(item));
-    } else {
-      root
-        .querySelectorAll(VIRTUAL_VIEW_SELECTOR)
-        .forEach((item) => items.push(item));
-    }
-    return items.some((item) => isNativeHiddenVirtualGap(item));
-  }
-
-  function hasUIDOutsideCommentRoots(root, uid) {
-    const id = String(uid || '').trim();
-    if (!(root instanceof Element) || !/^\d{5,}$/.test(id)) return false;
-    return getElementsForUID(root, id).some(
-      (el) => !el.closest(DOM_COMMENT_ROOT_SELECTOR)
-    );
-  }
-
-  function getHiddenVirtualItemUID(item) {
-    if (
-      !(item instanceof Element) ||
-      !item.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)
-    ) {
-      return '';
-    }
-    const uid = String(item.getAttribute(BLOCKED_CONTENT_UID_ATTR) || '').trim();
-    if (!/^\d{5,}$/.test(uid)) return '';
-    if (hasUIDOutsideCommentRoots(item, uid)) return uid;
-
-    // A hidden comment inside this virtual feed item must not collapse the
-    // entire feed item. Clear only the virtual shell marker and keep descendants.
-    clearOwnBlockedContentHideState(item);
-    return '';
-  }
-
-  function readStoredNumber(el, attr) {
-    const value = Number(el.getAttribute(attr));
-    return Number.isFinite(value) ? value : null;
-  }
-
-  function parsePixelValue(value) {
-    const match = String(value || '').match(/(-?\d+(?:\.\d+)?)px/);
-    return match ? Number(match[1]) : null;
-  }
-
-  function getVirtualBaseY(item) {
-    if (!(item instanceof Element)) return 0;
-    const mode = getVirtualLayoutMode(item);
-    const source =
-      mode === 'top' ? getTopSource(item) : getTransformSource(item);
-    const stored = readStoredNumber(item, ORIGINAL_TRANSLATE_Y_ATTR);
-    if (
-      stored !== null &&
-      item.getAttribute(ORIGINAL_LAYOUT_MODE_ATTR) === mode &&
-      item.getAttribute(
-        mode === 'top'
-          ? ORIGINAL_TOP_STYLE_ATTR
-          : ORIGINAL_TRANSFORM_STYLE_ATTR
-      ) === source
-    ) {
-      return stored;
-    }
-
-    const y = mode === 'top' ? parseTop(item) : parseTranslateY(item);
-    item.setAttribute(ORIGINAL_LAYOUT_MODE_ATTR, mode);
-    item.setAttribute(ORIGINAL_TRANSLATE_Y_ATTR, String(y));
-    if (mode === 'top') {
-      item.setAttribute(ORIGINAL_TOP_STYLE_ATTR, source);
-      item.setAttribute(ORIGINAL_TOP_ATTR, String(y));
-    } else {
-      item.setAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR, source);
-    }
-    return y;
-  }
-
-  function clearVirtualItemCompaction(item) {
-    if (!(item instanceof Element)) return;
-    item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
-    item.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
-    item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
-    item.style.removeProperty('--wb-bl-compact-y');
-    item.style.removeProperty('--wb-bl-compact-x');
-    item.style.removeProperty('--wb-bl-compact-top');
-    item.style.removeProperty('display');
-    item.style.removeProperty('height');
-    item.style.removeProperty('min-height');
-    item.style.removeProperty('margin');
-    item.style.removeProperty('padding');
-  }
-
-  function getVirtualSlotHeight(view, nextView) {
-    if (!view?.item) return 0;
-    const stored = readStoredNumber(view.item, ORIGINAL_SLOT_HEIGHT_ATTR);
-    const yGap = nextView ? Math.max(0, nextView.y - view.y) : null;
-    const currentHeight = Math.max(
-      0,
-      view.item.getBoundingClientRect().height
-    );
-    const height = yGap ?? (currentHeight || stored || 0);
-    if (height > 0) {
-      view.item.setAttribute(ORIGINAL_SLOT_HEIGHT_ATTR, String(height));
-      return height;
-    }
-    return stored || 0;
-  }
-
-  function getWrapperBaseMinHeight(wrapper) {
-    if (!(wrapper instanceof Element)) return 0;
-    const inlineMinHeight = parsePixelValue(wrapper.style?.minHeight || '');
-    if (inlineMinHeight !== null) {
-      wrapper.setAttribute(
-        ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR,
-        String(inlineMinHeight)
-      );
-      return inlineMinHeight;
-    }
-
-    const stored = readStoredNumber(wrapper, ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR);
-    if (stored !== null) return stored;
-
-    const current = Math.max(0, wrapper.getBoundingClientRect().height);
-    wrapper.setAttribute(ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR, String(current));
-    return current;
-  }
-
-  function clearVirtualWrapperCompaction(wrapper) {
-    if (!(wrapper instanceof Element)) return;
-    wrapper.removeAttribute(COMPACTED_VIRTUAL_WRAPPER_ATTR);
-    wrapper.style.removeProperty('--wb-bl-compact-wrapper-min-height');
-  }
-
-  function rememberVirtualItemSlotHeight(item) {
-    if (!(item instanceof Element) || !item.matches(VIRTUAL_VIEW_SELECTOR)) {
-      return 0;
-    }
-    const current = Math.max(0, item.getBoundingClientRect().height);
-    if (current > 0) {
-      item.setAttribute(ORIGINAL_SLOT_HEIGHT_ATTR, String(current));
-    }
-    return current;
-  }
-
-  function getVirtualItemIndex(item) {
-    if (!(item instanceof Element)) return null;
-    const direct = item.getAttribute('data-index');
-    const nested =
-      direct ||
-      item
-        .querySelector(':scope > [data-index], :scope [data-index]')
-        ?.getAttribute('data-index');
-    const index = Number(nested);
-    return Number.isFinite(index) ? index : null;
-  }
-
-  function getVirtualWrapperCompactionState(wrapper) {
-    return VIRTUAL_COMPACTION_RUNTIME.stateFor(wrapper);
-  }
-
-  function sumHiddenSlotHeights(state, beforeIndex = Infinity) {
-    let total = 0;
-    state.hiddenSlots.forEach((height, index) => {
-      if (index < beforeIndex) total += height;
-    });
-    return total;
-  }
-
-  function clearVirtualCompactionState(root = document) {
-    if (!root || !root.querySelectorAll) return;
-    VIRTUAL_COMPACTION_RUNTIME.reset();
-    const selector = [
-      `[${COMPACTED_VIRTUAL_ITEM_ATTR}]`,
-      `[${COMPACTED_TOP_ITEM_ATTR}]`,
-      `[${NATIVE_HIDDEN_VIRTUAL_GAP_ATTR}]`,
-      `[${COMPACTED_VIRTUAL_WRAPPER_ATTR}]`,
-      `[${ORIGINAL_LAYOUT_MODE_ATTR}]`,
-      `[${ORIGINAL_TRANSLATE_Y_ATTR}]`,
-      `[${ORIGINAL_TOP_ATTR}]`,
-      `[${ORIGINAL_TRANSFORM_STYLE_ATTR}]`,
-      `[${ORIGINAL_TOP_STYLE_ATTR}]`,
-      `[${ORIGINAL_SLOT_HEIGHT_ATTR}]`,
-      `[${ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR}]`,
-    ].join(',');
-    const nodes = [];
-    if (root instanceof Element && root.matches(selector)) nodes.push(root);
-    root.querySelectorAll(selector).forEach((node) => nodes.push(node));
-    Array.from(new Set(nodes)).forEach((node) => {
-      node.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
-      node.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
-      node.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
-      node.removeAttribute(COMPACTED_VIRTUAL_WRAPPER_ATTR);
-      node.removeAttribute(ORIGINAL_LAYOUT_MODE_ATTR);
-      node.removeAttribute(ORIGINAL_TRANSLATE_Y_ATTR);
-      node.removeAttribute(ORIGINAL_TOP_ATTR);
-      node.removeAttribute(ORIGINAL_TRANSFORM_STYLE_ATTR);
-      node.removeAttribute(ORIGINAL_TOP_STYLE_ATTR);
-      node.removeAttribute(ORIGINAL_SLOT_HEIGHT_ATTR);
-      node.removeAttribute(ORIGINAL_WRAPPER_MIN_HEIGHT_ATTR);
-      node.style.removeProperty('--wb-bl-compact-y');
-      node.style.removeProperty('--wb-bl-compact-x');
-      node.style.removeProperty('--wb-bl-compact-top');
-      node.style.removeProperty('--wb-bl-compact-wrapper-min-height');
-      if (!node.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)) {
-        node.style.removeProperty('display');
-        node.style.removeProperty('height');
-        node.style.removeProperty('min-height');
-        node.style.removeProperty('margin');
-        node.style.removeProperty('padding');
+      if (!player.hasAttribute(FLOATING_VIDEO_ORIGINAL_ARIA_ATTR)) {
+        player.setAttribute(
+          FLOATING_VIDEO_ORIGINAL_ARIA_ATTR,
+          player.hasAttribute('aria-hidden')
+            ? player.getAttribute('aria-hidden') || ''
+            : BLOCKED_CONTENT_ARIA_ABSENT
+        );
       }
+      pauseVideosIn(player);
+      player.setAttribute(FLOATING_VIDEO_SUPPRESS_ATTR, '1');
+      player.setAttribute('aria-hidden', 'true');
     });
   }
 
-  function applyVirtualWrapperCompaction(wrapper, removedHeight) {
-    if (!(wrapper instanceof Element) || removedHeight <= 0) {
-      clearVirtualWrapperCompaction(wrapper);
-      return;
+  function restoreSuppressedFloatingVideoPlayers(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const players = [];
+    if (
+      root instanceof Element &&
+      root.hasAttribute(FLOATING_VIDEO_SUPPRESS_ATTR)
+    ) {
+      players.push(root);
     }
-    const baseHeight = getWrapperBaseMinHeight(wrapper);
-    const nextHeight = Math.max(0, baseHeight - removedHeight);
-    wrapper.setAttribute(COMPACTED_VIRTUAL_WRAPPER_ATTR, '1');
-    setStyleVarIfNeeded(
-      wrapper,
-      '--wb-bl-compact-wrapper-min-height',
-      `${nextHeight}px`
-    );
-  }
-
-  function applyVirtualItemCompaction(item, x, y, mode) {
-    if (!(item instanceof Element)) return;
-    item.removeAttribute(NATIVE_HIDDEN_VIRTUAL_GAP_ATTR);
-    if (mode === 'top') {
-      item.removeAttribute(COMPACTED_VIRTUAL_ITEM_ATTR);
-      item.setAttribute(COMPACTED_TOP_ITEM_ATTR, '1');
-      setStyleVarIfNeeded(item, '--wb-bl-compact-top', `${y}px`);
-      return;
-    }
-    item.removeAttribute(COMPACTED_TOP_ITEM_ATTR);
-    item.setAttribute(COMPACTED_VIRTUAL_ITEM_ATTR, '1');
-    setStyleVarIfNeeded(item, '--wb-bl-compact-y', `${y}px`);
-    setStyleVarIfNeeded(item, '--wb-bl-compact-x', `${x}px`);
+    root
+      .querySelectorAll(`[${FLOATING_VIDEO_SUPPRESS_ATTR}]`)
+      .forEach((player) => players.push(player));
+    players.forEach((player) => {
+      const originalAria = player.getAttribute(
+        FLOATING_VIDEO_ORIGINAL_ARIA_ATTR
+      );
+      if (originalAria === BLOCKED_CONTENT_ARIA_ABSENT) {
+        player.removeAttribute('aria-hidden');
+      } else if (originalAria !== null) {
+        player.setAttribute('aria-hidden', originalAria);
+      }
+      player.removeAttribute(FLOATING_VIDEO_SUPPRESS_ATTR);
+      player.removeAttribute(FLOATING_VIDEO_ORIGINAL_ARIA_ATTR);
+    });
   }
 
   function getNativeTimelinePaginationParts(target) {
@@ -3792,16 +3624,13 @@
       return;
     }
     if (!root || !root.querySelectorAll) return;
-    // Older builds changed Vue's translate/top coordinates and wrapper
-    // min-height to close blocked rows. Those writes conflict with Vue's own
-    // recycler updates and can freeze scrolling. Remove any legacy state and
-    // let the scroller remeasure the hidden inner content shell itself.
-    const cleanupRoot =
+    // DynamicScroller owns row coordinates and wrapper height. The plugin only
+    // refreshes its pagination guard while Vue remeasures marked content shells.
+    const scanRoot =
       root instanceof Element
-        ? root.closest(VIRTUAL_WRAPPER_SELECTOR) || root
+        ? root.closest('.vue-recycle-scroller') || root
         : root;
-    clearVirtualCompactionState(cleanupRoot);
-    updateNativeTimelinePaginationGuards(cleanupRoot);
+    updateNativeTimelinePaginationGuards(scanRoot);
   }
 
   function isWeiboSearchResultPage() {
@@ -3947,7 +3776,6 @@
       ) {
         return;
       }
-      rememberVirtualItemSlotHeight(target);
       pauseVideosIn(target);
       target.setAttribute(HIDDEN_AD_ATTR, '1');
       hiddenAny = true;
@@ -4056,6 +3884,7 @@
     };
 
     // 点击的元素本身明确属于某个用户时优先使用它，但绝不从转发/评论操作区取 UID。
+    let unresolvedDirectTarget = null;
     const directNameSource = getUserNameContextTarget(el);
     if (directNameSource && card.contains(directNameSource)) {
       const directNameContext = buildContext(
@@ -4063,6 +3892,7 @@
         directNameSource
       );
       if (directNameContext) return directNameContext;
+      unresolvedDirectTarget = directNameSource;
     }
 
     const directSource = el.closest(
@@ -4083,6 +3913,7 @@
     if (directSource && card.contains(directSource)) {
       const directContext = buildContext(directSource, directSource);
       if (directContext) return directContext;
+      unresolvedDirectTarget ||= directSource;
     }
 
     // 搜索卡片头像常常不带 UID；此时从卡片头部主作者区域解析，避开底部“转发”按钮。
@@ -4134,12 +3965,31 @@
       .filter((item) => item instanceof Element)
       .find((item) => !!firstDOMUID(item));
 
-    return buildContext(uidSource, nameSource || uidSource);
+    const fallbackContext = buildContext(uidSource, nameSource || uidSource);
+    if (!fallbackContext) return null;
+    if (unresolvedDirectTarget) {
+      const expectedName = cleanUserDisplayName(
+        getNameFromElementAttributes(unresolvedDirectTarget) ||
+          getOwnDOMText(unresolvedDirectTarget)
+      );
+      const fallbackName = cleanUserDisplayName(
+        (nameSource
+          ? getNameFromElementAttributes(nameSource) ||
+            getOwnDOMText(nameSource)
+          : '')
+      );
+      if (!expectedName || !fallbackName || expectedName !== fallbackName) {
+        return null;
+      }
+    }
+    return fallbackContext;
   }
 
   function getCurrentProfilePageUID() {
     if (!['weibo.com', 'www.weibo.com'].includes(location.hostname)) return '';
-    const match = location.pathname.match(/^\/(?:u\/)?(\d{5,})(?:\/|$)/);
+    const match =
+      location.pathname.match(/^\/(?:u\/)?(\d{5,})(?:\/|$)/) ||
+      location.pathname.match(/^\/p\/100505(\d{5,})(?:\/|$)/);
     return match ? match[1] : '';
   }
 
@@ -4151,13 +4001,22 @@
     if (searchContext) return searchContext;
 
     const source = el.closest(USER_CONTEXT_TARGET_SELECTOR) || el;
-
     const post = source.closest(DOM_CONTENT_ROOT_SELECTOR);
-    const uid = firstDOMUID(source, post) || getCurrentProfilePageUID();
+    const nameTarget = getUserNameContextTarget(el) || el;
+    const explicitName = getUserNameLabel(nameTarget);
+    let uid =
+      firstDOMUID(source) ||
+      getScopedUserContextUID(nameTarget, explicitName);
+    if (!uid && !post) {
+      const profileHeader = source.closest(
+        'main header, [class*="ProfileHeader"], [class*="profileHeader"]'
+      );
+      if (profileHeader) uid = getCurrentProfilePageUID();
+    }
     if (!uid) return null;
 
     const url =
-      getProfileURL(source, uid, post) ||
+      getProfileURL(source, uid, nameTarget.closest('header') || post) ||
       (uid === getCurrentProfilePageUID() ? location.href : '');
     if (!url) return null;
     const root = findContentRootForUID(source, uid);
@@ -4168,7 +4027,7 @@
       uid,
       url,
       name:
-        getUserNameLabel(el) || getUserDisplayName(el, uid, post),
+        explicitName || getUserDisplayName(el, uid, post),
       source,
       root: root || fallbackRoot,
     };
@@ -4194,33 +4053,39 @@
     });
   }
 
-  function addContextUserToBL(ctx, options = {}) {
+  async function addContextUserToBL(ctx, options = {}) {
     if (!ctx?.uid) return;
-    const existed = BL.has(ctx.uid);
-    addUIDToLocalBL(ctx.uid);
+    const added = await addUIDToLocalBL(ctx.uid);
+    const existed = !added;
 
-    if (isRelationshipListPage()) {
-      restoreHiddenRelationshipItems(document);
-    } else {
-      const post = ctx.root || findContentRootForUID(ctx.source, ctx.uid);
-      let hiddenImmediately = false;
-      if (shouldHideBlacklistDOMRoot(post)) {
-        hiddenImmediately = hideContentRoot(post, ctx.uid);
+    try {
+      if (isRelationshipListPage()) {
+        restoreHiddenRelationshipItems(document);
+      } else {
+        const post = ctx.root || findContentRootForUID(ctx.source, ctx.uid);
+        let hiddenImmediately = false;
+        if (shouldHideBlacklistDOMRoot(post)) {
+          hiddenImmediately = hideContentRoot(post, ctx.uid);
+        }
+        if (hiddenImmediately) {
+          compactVirtualScrollerGaps(document);
+          nudgeTimelineLayout();
+        }
+        if (
+          CONTENT_FILTER_CFG.hideBlacklistComments &&
+          isCommentContentRoot(post)
+        ) {
+          const commentList = post.closest('.wbpro-list') || post.parentElement;
+          hideBlockedCommentRoots(commentList || post);
+        } else if (CONTENT_FILTER_CFG.hideBlacklistPosts) {
+          hideBlockedDOMPosts(document);
+          scheduleBlockedDOMRefresh();
+        }
       }
-      if (hiddenImmediately) {
-        compactVirtualScrollerGaps(document);
-        nudgeTimelineLayout();
-      }
-      if (
-        CONTENT_FILTER_CFG.hideBlacklistComments &&
-        isCommentContentRoot(post)
-      ) {
-        const commentList = post.closest('.wbpro-list') || post.parentElement;
-        hideBlockedCommentRoots(commentList || post);
-      } else if (CONTENT_FILTER_CFG.hideBlacklistPosts) {
-        hideBlockedDOMPosts(document);
-        scheduleBlockedDOMRefresh();
-      }
+    } catch (err) {
+      // DOM filtering is best-effort. The UID has already been persisted, and
+      // a rendering failure must never prevent an official blacklist request.
+      console.warn('[WB-BL] 本地屏蔽已保存，但当前页面刷新失败', err);
     }
 
     if (options.showToast !== false) {
@@ -4264,12 +4129,18 @@
     deleteStoredValue(getOfficialBlockResponseStorageKey(requestId));
   }
 
-  function scheduleOfficialBlockRelayClose() {
+  function scheduleOfficialBlockRelayClose(requestId = '') {
     setTimeout(() => {
       try {
         window.close();
       } catch {}
     }, 250);
+    if (isValidOfficialBlockRequestId(requestId)) {
+      setTimeout(
+        () => clearOfficialBlockRelayState(requestId),
+        OFFICIAL_BLOCK_RELAY_TIMEOUT_MS + 2000
+      );
+    }
   }
 
   function requestOfficialBlockViaMainHost(uid) {
@@ -4410,7 +4281,7 @@
         completedAt: Date.now(),
         schemaVersion: 1,
       });
-      scheduleOfficialBlockRelayClose();
+      scheduleOfficialBlockRelayClose(requestId);
       return;
     }
 
@@ -4435,7 +4306,7 @@
       });
     }
 
-    scheduleOfficialBlockRelayClose();
+    scheduleOfficialBlockRelayClose(requestId);
   }
 
   async function addUserToWeiboBlacklist(uid, options = {}) {
@@ -4490,7 +4361,7 @@
 
   async function addContextUserToBLAndWeibo(ctx) {
     if (!ctx?.uid) return;
-    addContextUserToBL(ctx, { showToast: false });
+    await addContextUserToBL(ctx, { showToast: false });
     showUserContextToast(`已本地屏蔽 @${ctx.name}，正在加入新浪微博官方黑名单...`);
 
     try {
@@ -4588,23 +4459,29 @@
         e.stopPropagation();
       });
       menu.addEventListener('click', async (e) => {
+        if (!isTrustedUserEvent(e)) return;
         e.stopPropagation();
         const btn = e.target.closest('button[data-action]');
         if (!btn || !activeCtx) return;
         const action = btn.getAttribute('data-action');
         const ctx = activeCtx;
         hideMenu({ force: true });
-        if (
-          action === 'block' &&
-          (await confirmContextUserBlocking(ctx, false))
-        ) {
-          addContextUserToBL(ctx);
-        }
-        if (
-          action === 'block-official' &&
-          (await confirmContextUserBlocking(ctx, true))
-        ) {
-          addContextUserToBLAndWeibo(ctx);
+        try {
+          if (
+            action === 'block' &&
+            (await confirmContextUserBlocking(ctx, false))
+          ) {
+            await addContextUserToBL(ctx);
+          }
+          if (
+            action === 'block-official' &&
+            (await confirmContextUserBlocking(ctx, true))
+          ) {
+            await addContextUserToBLAndWeibo(ctx);
+          }
+        } catch (error) {
+          console.warn('[WB-BL] 屏蔽操作失败', error);
+          showUserContextToast(error?.message || '屏蔽操作失败，请稍后重试');
         }
         if (action === 'open') openContextUserProfile(ctx);
       });
@@ -4652,8 +4529,17 @@
       showNotification(message, { type: 'success' });
 
     const handleContextMenu = (e) => {
-      const nameTarget = getUserNameContextTarget(e.target);
-      const ctx = nameTarget ? getUserContextFromTarget(nameTarget) : null;
+      if (!isTrustedUserEvent(e)) return;
+      const eventTarget =
+        e.target instanceof Element ? e.target : e.target?.parentElement;
+      const nameTarget = getUserNameContextTarget(eventTarget);
+      const directTarget = eventTarget?.closest?.(
+        USER_CONTEXT_TARGET_SELECTOR
+      );
+      const contextTarget = nameTarget || directTarget;
+      const ctx = contextTarget
+        ? getUserContextFromTarget(contextTarget)
+        : null;
       if (!ctx) {
         hideMenu({ force: true });
         return;
@@ -4790,7 +4676,6 @@
   function hideBlockedDOMPosts(root = document) {
     syncRelationshipPageMode();
     const hiddenAd = hideRecognizedAds(root || document);
-    removeWeiboFloatingVideoPlayers(root || document);
     suppressFloatingVideoPlayers(root || document);
     if (!root || !root.querySelectorAll) return;
     if (isRelationshipListPage()) {
@@ -4886,15 +4771,18 @@
     WB_INTERNAL.dom.schedule('blocked-page-ready-followup', run, 1200);
   }
 
-  let nativeVirtualGapRefreshFrame = 0;
-  function refreshNativeVirtualGapsOnScroll() {
-    if (nativeVirtualGapRefreshFrame) return;
-    nativeVirtualGapRefreshFrame = requestAnimationFrame(() => {
-      nativeVirtualGapRefreshFrame = 0;
-      if (isRelationshipListPage()) return;
-      if (hasNativeHiddenVirtualGaps(document)) {
-        compactVirtualScrollerGaps(document);
+  let nativePaginationGuardRefreshFrame = 0;
+  function refreshNativePaginationGuardOnScroll() {
+    if (nativePaginationGuardRefreshFrame) return;
+    nativePaginationGuardRefreshFrame = requestAnimationFrame(() => {
+      nativePaginationGuardRefreshFrame = 0;
+      if (
+        isRelationshipListPage() ||
+        !document.querySelector(`[${NATIVE_PAGINATION_GUARD_ATTR}]`)
+      ) {
+        return;
       }
+      updateNativeTimelinePaginationGuards(document);
     });
   }
 
@@ -4906,8 +4794,7 @@
     const hasHiddenState =
       typeof hasHiddenLayoutState === 'boolean'
         ? hasHiddenLayoutState
-        : hasHiddenNonCommentContent(document) ||
-          hasNativeHiddenVirtualGaps(document);
+        : hasHiddenNonCommentContent(document);
     if (!hasHiddenState) return false;
     if (isInsideCommentContentRoot(target)) return false;
     if (
@@ -4927,373 +4814,6 @@
     );
   }
 
-  function classifyInterceptedRequest(url) {
-    const parsed = parseFirstPartyWeiboURL(String(url || ''));
-    if (!parsed) {
-      return {
-        relevant: false,
-        url: String(url || ''),
-      };
-    }
-    const path = parsed.pathname;
-    const filterUser = /^\/ajax\/statuses\/filterUser\/?$/i.test(path);
-    const unfilterUser = /^\/ajax\/statuses\/unfilterUser\/?$/i.test(path);
-    const unreadTimeline = /\/unreadfriendstimeline(?:\/|$)/i.test(path);
-    const timelinePagination =
-      unreadTimeline && parsed.searchParams.has('max_id');
-    const relationshipFriends = isRelationshipFriendsURL(parsed.href);
-    const filterContent = isFilterableContentURL(parsed.href);
-    return {
-      relevant:
-        filterUser ||
-        unfilterUser ||
-        relationshipFriends ||
-        filterContent,
-      url: parsed.href,
-      filterUser,
-      unfilterUser,
-      unreadTimeline,
-      timelinePagination,
-      relationshipFriends,
-      filterContent,
-    };
-  }
-
-  // When a fetched page contains many locally blocked authors, Vue collapses
-  // those rows before the native infinite-loader leaves the viewport. Weibo
-  // can then request several older pages back-to-back without a new user
-  // scroll and eventually leave Axios in a permanent loading state. Preserve
-  // every native response, but space only those automatic pagination calls.
-  const TIMELINE_PAGINATION_MIN_INTERVAL_MS = 1100;
-  let nextTimelinePaginationRequestAt = 0;
-
-  function reserveTimelinePaginationDelay(request) {
-    if (
-      !request?.timelinePagination ||
-      CONTENT_FILTER_CFG.hideBlacklistPosts !== true ||
-      !BL.size
-    ) {
-      return 0;
-    }
-    const now = Date.now();
-    const scheduledAt = Math.max(now, nextTimelinePaginationRequestAt);
-    nextTimelinePaginationRequestAt =
-      scheduledAt + TIMELINE_PAGINATION_MIN_INTERVAL_MS;
-    return Math.max(0, scheduledAt - now);
-  }
-
-  function createCompatibleJSONResponse(originalResponse, data) {
-    if ([204, 205, 304].includes(originalResponse.status)) {
-      return originalResponse;
-    }
-    const headers = new Headers(originalResponse.headers);
-    headers.delete('content-length');
-    headers.delete('content-encoding');
-    headers.set('content-type', 'application/json; charset=utf-8');
-    const rebuilt = new Response(JSON.stringify(data), {
-      status: originalResponse.status,
-      statusText: originalResponse.statusText,
-      headers,
-    });
-    const nativeMetadata = new Set(['url', 'redirected', 'type']);
-    return new Proxy(rebuilt, {
-      get(target, property) {
-        if (nativeMetadata.has(property)) return originalResponse[property];
-        if (property === 'clone') {
-          return () =>
-            createCompatibleJSONResponse(originalResponse.clone(), data);
-        }
-        const value = Reflect.get(target, property, target);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
-  }
-
-  // 微博新版 Axios 依赖原生网络对象的身份与完整生命周期。全局替换
-  // fetch / XMLHttpRequest / WebSocket 会让时间线分页随机进入永久加载，
-  // 因此网络响应改写永久关闭；内容统一在原生渲染后由 DOM 层处理。
-  const ENABLE_PAGE_NETWORK_INTERCEPTION = false;
-  if (ENABLE_PAGE_NETWORK_INTERCEPTION) {
-  // === 仅处理已知微博接口的 Fetch 拦截 ===
-  window.fetch = async function (input, init) {
-    const rawURL =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input?.url || '';
-    const request = classifyInterceptedRequest(rawURL);
-    const paginationDelay = reserveTimelinePaginationDelay(request);
-    if (paginationDelay > 0) {
-      const signal =
-        init?.signal ||
-        (typeof Request !== 'undefined' && input instanceof Request
-          ? input.signal
-          : undefined);
-      await sleep(paginationDelay, signal);
-    }
-    const filterUID =
-      request.filterUser || request.unfilterUser
-        ? parseUIDFromRequest(request.url, init?.body)
-        : '';
-
-    const res = await WB_BL_NATIVE.fetch(input, init);
-
-    if (request.relationshipFriends) {
-      try {
-        const data = await res.clone().json();
-        const normalized = normalizeRelationshipFriendsData(data);
-        if (normalized !== data) {
-          return createCompatibleJSONResponse(res, normalized);
-        }
-        return res;
-      } catch {}
-    }
-
-    if (filterUID && (await didFilterRequestSucceed(res))) {
-      if (request.filterUser) {
-        addUIDToLocalBL(filterUID);
-        hideBlockedDOMPosts(document);
-        scheduleBlockedDOMRefresh();
-      }
-      if (request.unfilterUser) {
-        removeUIDFromLocalBL(filterUID);
-      }
-    }
-
-    if (request.filterContent) {
-      try {
-        const data = await res.clone().json();
-        const transformed = transformContentResponseData(data, request.url);
-        if (transformed.changed) {
-          return createCompatibleJSONResponse(res, transformed.data);
-        }
-      } catch {}
-    }
-    return res;
-  };
-
-  // === XHR 拦截 ===
-  function defineXHRTextResponse(xhr, text) {
-    try {
-      Object.defineProperty(xhr, 'responseText', {
-        configurable: true,
-        get: () => text,
-      });
-    } catch {
-      return;
-    }
-    const responseType = xhr.responseType || '';
-    if (!['', 'text', 'json'].includes(responseType)) return;
-    let responseValue = text;
-    if (responseType === 'json') {
-      try {
-        responseValue = JSON.parse(text);
-      } catch {}
-    }
-    try {
-      Object.defineProperty(xhr, 'response', {
-        configurable: true,
-        get: () => responseValue,
-      });
-    } catch {}
-  }
-
-  const xhrRequestMetadata = new WeakMap();
-  const pendingTimelineXHR = new WeakMap();
-
-  function clearPendingTimelineXHR(xhr) {
-    const pending = pendingTimelineXHR.get(xhr);
-    if (!pending) return false;
-    clearTimeout(pending.timer);
-    pendingTimelineXHR.delete(xhr);
-    return true;
-  }
-
-  function sendNativeXHRWithTimelinePacing(xhr, body, request) {
-    const delay = reserveTimelinePaginationDelay(request);
-    if (delay <= 0) {
-      return WB_BL_NATIVE.XHRSend.call(xhr, body);
-    }
-    const timer = setTimeout(() => {
-      pendingTimelineXHR.delete(xhr);
-      try {
-        WB_BL_NATIVE.XHRSend.call(xhr, body);
-      } catch (error) {
-        console.warn('[WB-BL] 时间线分页请求延迟发送失败', error);
-      }
-    }, delay);
-    pendingTimelineXHR.set(xhr, { timer });
-    return undefined;
-  }
-
-  XMLHttpRequest.prototype.open = function (method, url, ...args) {
-    clearPendingTimelineXHR(this);
-    const rawURL = url instanceof URL ? url.href : String(url || '');
-    xhrRequestMetadata.set(this, classifyInterceptedRequest(rawURL));
-    return WB_BL_NATIVE.XHROpen.call(this, method, url, ...args);
-  };
-  XMLHttpRequest.prototype.abort = function () {
-    clearPendingTimelineXHR(this);
-    return WB_BL_NATIVE.XHRAbort.call(this);
-  };
-  XMLHttpRequest.prototype.send = function (body) {
-    const request = xhrRequestMetadata.get(this);
-    if (!request?.relevant) {
-      return sendNativeXHRWithTimelinePacing(this, body, request);
-    }
-    this.addEventListener('readystatechange', () => {
-      if (this.readyState === 4 && this.status === 200) {
-        if (request.filterUser || request.unfilterUser) {
-          const uid = parseUIDFromRequest(request.url, body);
-          let ok = true;
-          try {
-            const data = JSON.parse(this.responseText);
-            ok = data?.ok !== 0;
-          } catch {}
-          if (uid && ok) {
-            if (request.filterUser) {
-              addUIDToLocalBL(uid);
-              hideBlockedDOMPosts(document);
-              scheduleBlockedDOMRefresh();
-            }
-            if (request.unfilterUser) {
-              removeUIDFromLocalBL(uid);
-            }
-          }
-        }
-
-        if (request.relationshipFriends) {
-          try {
-            const data = JSON.parse(this.responseText);
-            const normalized = normalizeRelationshipFriendsData(data);
-            if (normalized !== data) {
-              defineXHRTextResponse(this, JSON.stringify(normalized));
-            }
-          } catch {}
-          return;
-        }
-        // 按本地屏蔽列表过滤内容
-        if (request.filterContent) {
-          try {
-            const data = JSON.parse(this.responseText);
-            const transformed = transformContentResponseData(
-              data,
-              request.url
-            );
-            if (transformed.changed) {
-              defineXHRTextResponse(this, JSON.stringify(transformed.data));
-            }
-          } catch {}
-        }
-      }
-    });
-    return sendNativeXHRWithTimelinePacing(this, body, request);
-  };
-
-  // === WebSocket 拦截 ===
-  function getFilteredWebSocketEvent(evt, url = '') {
-    if (!evt || typeof evt.data !== 'string') return evt;
-    try {
-      const transformed = transformContentResponseData(
-        JSON.parse(evt.data),
-        url
-      );
-      if (!transformed.changed) return evt;
-      const data = JSON.stringify(transformed.data);
-      return new Proxy(evt, {
-        get(target, prop, receiver) {
-          if (prop === 'data') return data;
-          const value = Reflect.get(target, prop, receiver);
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      });
-    } catch {
-      return evt;
-    }
-  }
-
-  window.WebSocket = class extends WB_BL_NATIVE.WebSocket {
-    constructor(url, protocols) {
-      if (protocols === undefined) super(url);
-      else super(url, protocols);
-      this.__wbURL = String(url || '');
-      this.__wbFilterMessages = isFilterableContentURL(this.__wbURL);
-      this.__wbMessageListeners = new WeakMap();
-      this.__wbOnMessage = null;
-      this.__wbOnMessageWrapper = null;
-    }
-
-    addEventListener(type, listener, options) {
-      if (!this.__wbFilterMessages || type !== 'message' || !listener) {
-        return super.addEventListener(type, listener, options);
-      }
-      if (
-        typeof listener !== 'function' &&
-        typeof listener.handleEvent !== 'function'
-      ) {
-        return super.addEventListener(type, listener, options);
-      }
-      let wrapped = this.__wbMessageListeners.get(listener);
-      if (!wrapped) {
-        wrapped =
-          typeof listener === 'function'
-            ? function (evt) {
-                return listener.call(
-                  this,
-                  getFilteredWebSocketEvent(evt, this.__wbURL)
-                );
-              }
-            : {
-                handleEvent: (evt) =>
-                  listener.handleEvent.call(
-                    listener,
-                    getFilteredWebSocketEvent(evt, this.__wbURL)
-                  ),
-              };
-        this.__wbMessageListeners.set(listener, wrapped);
-      }
-      return super.addEventListener(type, wrapped, options);
-    }
-
-    removeEventListener(type, listener, options) {
-      const wrapped =
-        type === 'message' && listener
-          ? this.__wbMessageListeners.get(listener)
-          : null;
-      return super.removeEventListener(type, wrapped || listener, options);
-    }
-
-    get onmessage() {
-      return this.__wbFilterMessages
-        ? this.__wbOnMessage
-        : super.onmessage;
-    }
-
-    set onmessage(listener) {
-      if (!this.__wbFilterMessages) {
-        super.onmessage = listener;
-        return;
-      }
-      if (this.__wbOnMessageWrapper) {
-        super.removeEventListener('message', this.__wbOnMessageWrapper);
-      }
-      this.__wbOnMessage = typeof listener === 'function' ? listener : null;
-      this.__wbOnMessageWrapper = this.__wbOnMessage
-        ? (evt) =>
-            this.__wbOnMessage.call(
-              this,
-              getFilteredWebSocketEvent(evt, this.__wbURL)
-            )
-        : null;
-      if (this.__wbOnMessageWrapper) {
-        super.addEventListener('message', this.__wbOnMessageWrapper);
-      }
-    }
-  };
-
-  }
-
   // === MutationObserver 过滤 ===
   (function () {
     let pendingMutations = [];
@@ -5309,8 +4829,7 @@
       );
       const hasHiddenLayoutState =
         attributeMutations.length > 0 &&
-        (hasHiddenNonCommentContent(document) ||
-          hasNativeHiddenVirtualGaps(document));
+        hasHiddenNonCommentContent(document);
       const needsFullRefresh = attributeMutations.some((mutation) =>
         isRelevantBlockedLayoutMutationTarget(
           mutation.target,
@@ -5320,19 +4839,15 @@
       const addedRoots = WB_INTERNAL.dom.collectAddedRoots(ms);
       const hasHiddenFeedContent =
         addedRoots.length > 0 && hasHiddenNonCommentContent(document);
-      const hasNativeHiddenGap =
-        addedRoots.length > 0 && hasNativeHiddenVirtualGaps(document);
       addedRoots.forEach((addedElement) => {
         hideRecognizedAds(addedElement);
-        removeWeiboFloatingVideoPlayers(addedElement);
         suppressFloatingVideoPlayers(addedElement);
         if (
           hasHiddenFeedContent ||
-          hasNativeHiddenGap ||
           addedElement.matches(DOM_UID_SELECTOR) ||
           addedElement.querySelector(DOM_UID_SELECTOR)
         ) {
-          hideBlockedDOMPosts(hasNativeHiddenGap ? document : addedElement);
+          hideBlockedDOMPosts(addedElement);
         }
         hideBlockedCommentRoots(addedElement);
       });
@@ -5346,7 +4861,6 @@
       syncRelationshipPageMode();
       const root = document.body || document.documentElement;
       if (root) {
-        clearVirtualCompactionState(root);
         hideBlockedDOMPosts(root);
       }
     };
@@ -5362,10 +4876,10 @@
     }
   })();
 
-  window.addEventListener('scroll', refreshNativeVirtualGapsOnScroll, {
+  window.addEventListener('scroll', refreshNativePaginationGuardOnScroll, {
     passive: true,
   });
-  document.addEventListener('scroll', refreshNativeVirtualGapsOnScroll, {
+  document.addEventListener('scroll', refreshNativePaginationGuardOnScroll, {
     passive: true,
     capture: true,
   });
@@ -5389,6 +4903,10 @@
   const UID_MANAGER_PAGE_SIZE = 50;
   const MAX_IMPORT_FILE_SIZE = 2 * 1024 * 1024;
   const MAX_IMPORT_UIDS = 100000;
+
+  function isTrustedSettingsEvent(event) {
+    return WB_INTERNAL.isTrustedUserEvent(event);
+  }
 
   function requestCenteredConfirm(options) {
     if (typeof WB_INTERNAL.confirm !== 'function') {
@@ -5430,9 +4948,6 @@
         .filter((s) => /^\d{5,}$/.test(s))
     );
   }
-  function writeBLExclusionSet(set) {
-    GM_setValue(UID_EXCLUSION_KEY, Array.from(set).join(','));
-  }
   function readBLSet() {
     const raw = GM_getValue(UID_KEY, '');
     if (!raw) return new Set();
@@ -5444,40 +4959,15 @@
         .filter((s) => /^\d{5,}$/.test(s) && !exclusions.has(s))
     );
   }
-  function writeBLSet(set) {
-    GM_setValue(UID_KEY, Array.from(set).join(','));
-  }
   function syncRuntimeBL(options = {}) {
     return WB_INTERNAL.blSync?.reloadFromStorage?.(options);
   }
-  function addToBL(uids) {
-    const set = readBLSet();
-    const exclusions = readBLExclusionSet();
-    let exclusionsChanged = false;
-    const addedUIDs = [];
-    uids.forEach((u) => {
-      const uid = String(u).trim();
-      if (!/^\d{5,}$/.test(uid)) return;
-      if (exclusions.delete(uid)) exclusionsChanged = true;
-      if (!set.has(uid)) addedUIDs.push(uid);
-      set.add(uid);
-    });
-    writeBLSet(set);
-    if (exclusionsChanged) writeBLExclusionSet(exclusions);
-    return { size: set.size, added: addedUIDs.length };
+  async function addToBL(uids) {
+    return WB_INTERNAL.blStore.mutate({ add: uids });
   }
-  function removeFromBL(uids) {
-    const set = readBLSet();
-    const exclusions = readBLExclusionSet();
-    uids.forEach((u) => {
-      const uid = String(u).trim();
-      if (!/^\d{5,}$/.test(uid)) return;
-      set.delete(uid);
-      exclusions.add(uid);
-    });
-    writeBLSet(set);
-    writeBLExclusionSet(exclusions);
-    return set.size;
+  async function removeFromBL(uids) {
+    const result = await WB_INTERNAL.blStore.mutate({ remove: uids });
+    return result.size;
   }
   function parseUIDInput(text) {
     return (text || '')
@@ -5531,7 +5021,7 @@
       }
 
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const content = e.target.result;
           let importData = null;
@@ -5573,47 +5063,16 @@
             return;
           }
 
-          const currentSet = readBLSet();
-          const exclusions = readBLExclusionSet();
-          const oldSize = currentSet.size;
-          let newSize,
-            addedCount,
-            removedCount = 0;
-          const addedUIDs = uidsToImport.filter(
-            (uid) => !currentSet.has(uid)
-          );
-
-          if (mode === 'replace') {
-            // 替换模式：清空后导入
-            const newSet = new Set(uidsToImport);
-            currentSet.forEach((uid) => {
-              if (!newSet.has(uid)) exclusions.add(uid);
-            });
-            newSet.forEach((uid) => exclusions.delete(uid));
-            writeBLSet(newSet);
-            writeBLExclusionSet(exclusions);
-            newSize = newSet.size;
-            addedCount = addedUIDs.length;
-            removedCount = Array.from(currentSet).filter(
-              (u) => !newSet.has(u)
-            ).length;
-          } else {
-            // 合并模式（默认）：保留现有 + 添加新的
-            uidsToImport.forEach((u) => {
-              exclusions.delete(u);
-              currentSet.add(u);
-            });
-            writeBLSet(currentSet);
-            writeBLExclusionSet(exclusions);
-            newSize = currentSet.size;
-            addedCount = newSize - oldSize;
-          }
+          const mutation =
+            mode === 'replace'
+              ? await WB_INTERNAL.blStore.mutate({ replace: uidsToImport })
+              : await WB_INTERNAL.blStore.mutate({ add: uidsToImport });
           resolve({
             success: true,
             importedCount: uidsToImport.length,
-            addedCount,
-            removedCount,
-            totalCount: newSize,
+            addedCount: mutation.added,
+            removedCount: mutation.removed,
+            totalCount: mutation.size,
             mode,
             exportTime: importData?.exportTime || '未知',
             exportVersion: importData?.version || '未知',
@@ -5638,6 +5097,7 @@
     input.accept = '.json,.txt';
     input.style.display = 'none';
     input.addEventListener('change', (e) => {
+      if (!isTrustedSettingsEvent(e)) return;
       const file = e.target.files[0];
       if (file) {
         onFileSelected(file);
@@ -5667,6 +5127,11 @@
   }
   const SEARCH_RELATED_USERS_HIDDEN_ATTR =
     'data-__wb_search_related_users_hidden';
+  const HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR =
+    'data-__wb_hot_search_sidebar_overflow_spacing';
+  const HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY =
+    '--wb-pynseq-sidebar-overflow-space';
+  let hotSearchSidebarOverflowSpacingActive = false;
 
   function hideSearchRelatedUsersPanel(root = document) {
     if (
@@ -5682,7 +5147,6 @@
       document
         .querySelectorAll(`[${SEARCH_RELATED_USERS_HIDDEN_ATTR}]`)
         .forEach((panel) => {
-          panel.style.removeProperty('display');
           panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
           panel.removeAttribute('data-__wb_hidden_by_userscript');
         });
@@ -5710,7 +5174,6 @@
       ) {
         return;
       }
-      panel.style.setProperty('display', 'none', 'important');
       panel.setAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR, '1');
       panel.setAttribute('data-__wb_hidden_by_userscript', '1');
     });
@@ -5738,6 +5201,59 @@
     );
   }
 
+  function restoreHotSearchSidebarOverflowSpacing(rail) {
+    if (!(rail instanceof Element)) return;
+    rail.style.removeProperty(HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY);
+    rail.removeAttribute(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR);
+  }
+
+  function syncHotSearchSidebarLayout() {
+    const markedSelector = `[${HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR}]`;
+    const targetRailOverflow = new Map();
+
+    if (hotSearchSidebarOverflowSpacingActive && !CFG.hideHotSearch) {
+      document.querySelectorAll('.wbpro-side').forEach((side) => {
+        if (!normText(side.textContent).includes('微博热搜')) return;
+        const rail = side.closest('.rightSide, [class*="_sideBox_"]');
+        if (
+          !rail ||
+          rail === document.body ||
+          rail === document.documentElement
+        ) {
+          return;
+        }
+
+        let shell = side;
+        while (shell.parentElement && shell.parentElement !== rail) {
+          shell = shell.parentElement;
+        }
+        if (shell.parentElement !== rail) return;
+        const overflowHeight = Math.max(
+          0,
+          Math.ceil(shell.scrollHeight - shell.clientHeight)
+        );
+        if (overflowHeight <= 1) return;
+        targetRailOverflow.set(
+          rail,
+          Math.max(targetRailOverflow.get(rail) || 0, overflowHeight)
+        );
+      });
+    }
+
+    document.querySelectorAll(markedSelector).forEach((rail) => {
+      if (!targetRailOverflow.has(rail)) {
+        restoreHotSearchSidebarOverflowSpacing(rail);
+      }
+    });
+    targetRailOverflow.forEach((overflowHeight, rail) => {
+      rail.style.setProperty(
+        HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY,
+        `${overflowHeight}px`
+      );
+      rail.setAttribute(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR, '1');
+    });
+  }
+
   function promoteHiddenSidebarShells(root = document) {
     if (!root || !root.querySelectorAll) return;
     const hidden = [];
@@ -5755,213 +5271,11 @@
       ) {
         return;
       }
-      panel.style.removeProperty('display');
       panel.removeAttribute('data-__wb_hidden_by_userscript');
-      side.style.setProperty('display', 'none', 'important');
       side.setAttribute('data-__wb_hidden_by_userscript', '1');
     });
   }
-  function normalizeFirstVisibleSidebarGaps(root = document) {
-    const scope =
-      root && root.querySelectorAll
-        ? root instanceof Element
-          ? root.closest('.wbpro-side')?.parentElement || root
-          : root
-        : document;
-    const sidebarParents = new Set();
-    const sides = [];
-    if (scope instanceof Element && scope.matches('.wbpro-side')) {
-      sides.push(scope);
-    }
-    scope.querySelectorAll?.('.wbpro-side').forEach((side) => sides.push(side));
-    sides.forEach((side) => {
-      if (side.parentElement) sidebarParents.add(side.parentElement);
-    });
-
-    sidebarParents.forEach((parent) => {
-      const panels = Array.from(parent.children).filter(
-        (item) => item instanceof Element && item.matches('.wbpro-side')
-      );
-      let firstVisible = null;
-      panels.forEach((panel) => {
-        const marked = panel.hasAttribute('data-__wb_first_visible_sidebar');
-        if (marked) {
-          const original = panel.getAttribute(
-            'data-__wb_original_margin_top'
-          );
-          if (original) panel.style.marginTop = original;
-          else panel.style.removeProperty('margin-top');
-          panel.removeAttribute('data-__wb_first_visible_sidebar');
-        }
-
-        const isVisible =
-          !panel.hasAttribute('data-__wb_hidden_by_userscript') &&
-          getComputedStyle(panel).display !== 'none';
-        if (!firstVisible && isVisible) firstVisible = panel;
-      });
-
-      if (!firstVisible) return;
-      if (!firstVisible.hasAttribute('data-__wb_original_margin_top')) {
-        firstVisible.setAttribute(
-          'data-__wb_original_margin_top',
-          firstVisible.style.marginTop || ''
-        );
-      }
-      firstVisible.style.setProperty('margin-top', '0', 'important');
-      firstVisible.setAttribute('data-__wb_first_visible_sidebar', '1');
-    });
-  }
-
-  function findComposerTopAnchor() {
-    const isVisibleAnchor = (el) => {
-      const rect = el?.getBoundingClientRect?.();
-      return !!(rect && rect.width > 0 && rect.height > 0 && rect.bottom > 0);
-    };
-    const getPublishShell = (el) =>
-      el?.closest?.(
-        '[class*="_publishCard_"], [class*="publishCard"], .woo-panel-main'
-      ) ||
-      el?.closest?.('[class*="_box_vkpry_"]') ||
-      el?.closest?.('.wbpro-form') ||
-      null;
-    const textarea =
-      document.querySelector(
-        'textarea[placeholder*="新鲜事"], textarea[placeholder*="分享给大家"]'
-      ) ||
-      Array.from(document.querySelectorAll('textarea')).find((item) => {
-        if (!isVisibleAnchor(item)) return false;
-        const shell = getPublishShell(item);
-        if (!shell || !isVisibleAnchor(shell)) return false;
-        return !item.closest('aside, nav, .wbpro-side');
-      });
-    const textareaShell = getPublishShell(textarea);
-    if (isVisibleAnchor(textareaShell)) return textareaShell;
-    if (isVisibleAnchor(textarea)) return textarea;
-
-    return (
-      Array.from(
-        document.querySelectorAll('[class*="_publishCard_"], [class*="publishCard"]')
-      ).find(isVisibleAnchor) || null
-    );
-  }
-
-  function findFirstVisibleSidebarPanel(anchor = null) {
-    const anchorRect = anchor?.getBoundingClientRect?.() || null;
-    const panels = Array.from(document.querySelectorAll('.wbpro-side'));
-    return (
-      panels
-        .filter((panel) => {
-          if (panel.hasAttribute('data-__wb_hidden_by_userscript')) return false;
-          const style = getComputedStyle(panel);
-          if (style.display === 'none' || style.visibility === 'hidden') {
-            return false;
-          }
-          const rect = panel.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0) return false;
-          if (anchorRect && rect.left < anchorRect.right - 12) return false;
-          return true;
-        })
-        .sort(
-          (a, b) =>
-            a.getBoundingClientRect().top - b.getBoundingClientRect().top
-        )[0] || null
-    );
-  }
-
-  const SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR =
-    'data-__wb_anchor_original_transform';
-
-  function restoreSidebarPanelAnchorAlignment(item) {
-    if (!(item instanceof Element)) return;
-    if (item.hasAttribute('data-__wb_anchor_original_margin_top')) {
-      const originalMargin = item.getAttribute(
-        'data-__wb_anchor_original_margin_top'
-      );
-      if (originalMargin) item.style.marginTop = originalMargin;
-      else item.style.removeProperty('margin-top');
-    }
-    if (item.hasAttribute(SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR)) {
-      const originalTransform = item.getAttribute(
-        SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR
-      );
-      if (originalTransform) item.style.transform = originalTransform;
-      else item.style.removeProperty('transform');
-    }
-    item.removeAttribute('data-__wb_sidebar_anchor_aligned');
-  }
-
-  function alignFirstVisibleSidebarToComposer() {
-    const anchor = findComposerTopAnchor();
-    const panel = findFirstVisibleSidebarPanel(anchor);
-    if (!anchor || !panel) return;
-    const anchorRect = anchor.getBoundingClientRect();
-    if (!isComposerAnchorVisible(anchor)) {
-      restoreSidebarAnchorAlignment();
-      return;
-    }
-
-    document
-      .querySelectorAll('[data-__wb_sidebar_anchor_aligned]')
-      .forEach((item) => {
-        if (item === panel) return;
-        restoreSidebarPanelAnchorAlignment(item);
-      });
-
-    if (!panel.hasAttribute('data-__wb_anchor_original_margin_top')) {
-      panel.setAttribute(
-        'data-__wb_anchor_original_margin_top',
-        panel.style.marginTop || ''
-      );
-    }
-    if (!panel.hasAttribute(SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR)) {
-      panel.setAttribute(
-        SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR,
-        panel.style.transform || ''
-      );
-    }
-
-    const original = panel.getAttribute('data-__wb_anchor_original_margin_top');
-    if (original) panel.style.marginTop = original;
-    else panel.style.removeProperty('margin-top');
-    const originalTransform = panel.getAttribute(
-      SIDEBAR_ALIGN_ORIGINAL_TRANSFORM_ATTR
-    );
-    if (originalTransform) panel.style.transform = originalTransform;
-    else panel.style.removeProperty('transform');
-
-    const desiredTop = anchorRect.top;
-    const delta = Math.round(desiredTop - panel.getBoundingClientRect().top);
-    if (Math.abs(delta) <= 1) return;
-
-    const translate = `translateY(${delta}px)`;
-    panel.style.transform = originalTransform
-      ? `${originalTransform} ${translate}`
-      : translate;
-    panel.setAttribute('data-__wb_sidebar_anchor_aligned', '1');
-  }
-
-  function restoreSidebarAnchorAlignment() {
-    document
-      .querySelectorAll('[data-__wb_sidebar_anchor_aligned]')
-      .forEach((item) => restoreSidebarPanelAnchorAlignment(item));
-  }
-
-  let sidebarAlignPausedUntil = 0;
-  function pauseSidebarAlignment(ms = 1800) {
-    sidebarAlignPausedUntil = Math.max(sidebarAlignPausedUntil, Date.now() + ms);
-  }
-
-  function isComposerAnchorVisible(anchor = findComposerTopAnchor()) {
-    const rect = anchor?.getBoundingClientRect?.();
-    return !!(
-      rect &&
-      rect.bottom > 0 &&
-      rect.top >= 0 &&
-      rect.top < window.innerHeight * 0.75
-    );
-  }
-
-  function hidePanels(root = document, options = {}) {
+  function hidePanels(root = document) {
     promoteHiddenSidebarShells(root);
     hideFollowRecommendationPanel(root);
     hideSearchRelatedUsersPanel(root);
@@ -5977,7 +5291,6 @@
         if (text.includes(normText(t))) {
           const panel = findSectionRootFromHeading(h);
           if (panel && !panel.hasAttribute('data-__wb_hidden_by_userscript')) {
-            panel.style.setProperty('display', 'none', 'important');
             panel.setAttribute('data-__wb_hidden_by_userscript', '1');
           }
           break;
@@ -5985,64 +5298,34 @@
       }
     });
     hideSearchHotBand(root);
-    if (!options.skipSidebarLayout) {
-      const alignPaused = Date.now() < sidebarAlignPausedUntil;
-      normalizeFirstVisibleSidebarGaps(root);
-      if (!options.skipAlign && !alignPaused) {
-        alignFirstVisibleSidebarToComposer();
-      }
-    }
+    syncHotSearchSidebarLayout();
   }
 
   function restoreManagedPanels() {
     document
       .querySelectorAll('[data-__wb_hidden_by_userscript]')
       .forEach((panel) => {
-        panel.style.removeProperty('display');
         panel.removeAttribute('data-__wb_hidden_by_userscript');
         panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
       });
-    document
-      .querySelectorAll('[data-__wb_first_visible_sidebar]')
-      .forEach((panel) => {
-        const original = panel.getAttribute('data-__wb_original_margin_top');
-        if (original) panel.style.marginTop = original;
-        else panel.style.removeProperty('margin-top');
-        panel.removeAttribute('data-__wb_first_visible_sidebar');
-      });
-    restoreSidebarAnchorAlignment();
   }
 
-  function applyPanelSettingsNow() {
+  function applyPanelSettingsNow(options = {}) {
+    if (options.restoredHotSearch) {
+      hotSearchSidebarOverflowSpacingActive = true;
+    }
+    if (CFG.hideHotSearch) {
+      hotSearchSidebarOverflowSpacingActive = false;
+    }
     restoreManagedPanels();
     hidePanels(document);
     queuePanelRefresh(document, 80);
   }
 
-  let sidebarScrollRefreshFrame = 0;
-  function refreshSidebarAlignmentNow() {
-    if (isComposerAnchorVisible()) {
-      sidebarAlignPausedUntil = 0;
-      normalizeFirstVisibleSidebarGaps(document);
-      alignFirstVisibleSidebarToComposer();
-      return;
-    }
-    restoreSidebarAnchorAlignment();
-    normalizeFirstVisibleSidebarGaps(document);
-  }
-
-  function refreshSidebarAlignmentOnScroll() {
-    if (sidebarScrollRefreshFrame) return;
-    sidebarScrollRefreshFrame = requestAnimationFrame(() => {
-      sidebarScrollRefreshFrame = 0;
-      refreshSidebarAlignmentNow();
-    });
-  }
-
-  function queuePanelRefresh(root = document, delay = 80, options = {}) {
+  function queuePanelRefresh(root = document, delay = 80) {
     WB_INTERNAL.dom.schedule(
       'sidebar-panel-refresh',
-      () => hidePanels(root || document, options),
+      () => hidePanels(root || document),
       delay
     );
   }
@@ -6063,7 +5346,6 @@
     root.querySelectorAll(selector).forEach((panel) => panels.push(panel));
     panels.forEach((panel) => {
       if (!panel.hasAttribute('data-__wb_hidden_by_userscript')) {
-        panel.style.setProperty('display', 'none', 'important');
         panel.setAttribute('data-__wb_hidden_by_userscript', '1');
       }
     });
@@ -6087,7 +5369,6 @@
         side !== document.documentElement &&
         normText(side.textContent).includes('微博热搜')
       ) {
-        side.style.setProperty('display', 'none', 'important');
         side.setAttribute('data-__wb_hidden_by_userscript', '1');
         return;
       }
@@ -6098,7 +5379,6 @@
         target.isConnected &&
         !target.hasAttribute('data-__wb_hidden_by_userscript')
       ) {
-        target.style.setProperty('display', 'none', 'important');
         target.setAttribute('data-__wb_hidden_by_userscript', '1');
       }
     });
@@ -6144,34 +5424,15 @@
   }
   document.addEventListener(LAYOUT_REFRESH_EVENT, (event) => {
     const isBlockedRefresh = event?.detail?.reason === 'blocked-content';
-    const composerVisible = isComposerAnchorVisible();
-    if (isBlockedRefresh && !composerVisible) {
-      pauseSidebarAlignment();
-    }
-    const panelRefreshOptions = {
-      skipAlign: isBlockedRefresh && !composerVisible,
-      skipSidebarLayout: false,
-    };
     if (isBlockedRefresh) {
-      hidePanels(document, panelRefreshOptions);
+      hidePanels(document);
     }
-    queuePanelRefresh(
-      document,
-      isBlockedRefresh ? 180 : 90,
-      panelRefreshOptions
-    );
+    queuePanelRefresh(document, isBlockedRefresh ? 180 : 90);
   });
   WB_INTERNAL.dom.subscribeMutations('sidebar-panels', (mutations) => {
     WB_INTERNAL.dom
       .collectAddedRoots(mutations)
       .forEach((root) => hidePanels(root));
-  });
-  window.addEventListener('scroll', refreshSidebarAlignmentOnScroll, {
-    passive: true,
-  });
-  document.addEventListener('scroll', refreshSidebarAlignmentOnScroll, {
-    passive: true,
-    capture: true,
   });
   window.addEventListener('resize', () => {
     queuePanelRefresh(document, 80);
@@ -6189,6 +5450,12 @@
   function ensureStyles() {
     if (document.getElementById('wbset-style')) return;
     const css = `
+    [data-__wb_hidden_by_userscript="1"]{display:none!important}
+    [${HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR}="1"]::after{
+      content:"";display:block;width:1px;height:var(${HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY},0px);
+      min-height:var(${HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY},0px);flex-shrink:0;
+      visibility:hidden;pointer-events:none
+    }
     .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;width:46px;height:46px;display:grid;place-items:center;padding:0;border:1px solid rgba(0,0,0,.1);border-radius:50%;background:rgba(255,255,255,.94);color:#252525;cursor:pointer;box-shadow:0 8px 26px rgba(0,0,0,.18);backdrop-filter:blur(10px);transition:transform .18s ease,box-shadow .18s ease,background .18s ease;}
     .wbset-btn svg{width:21px;height:21px;display:block;transition:transform .22s ease}
     .wbset-btn:hover{background:#fff;transform:translateY(-2px);box-shadow:0 12px 32px rgba(0,0,0,.22)}
@@ -6425,7 +5692,7 @@
   }
 
   function buyMeACoffeeIconMarkup() {
-    return `<span class="wbset-support-icon" aria-hidden="true"><img src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg" alt=""></span>`;
+    return `<span class="wbset-support-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M5 3h12a1 1 0 0 1 1 1v2h1a4 4 0 0 1 0 8h-1.35A7 7 0 0 1 11 19H9a7 7 0 0 1-7-7V6h14V5H5V3Zm13 5v4h1a2 2 0 0 0 0-4h-1ZM4 8v4a5 5 0 0 0 5 5h2a5 5 0 0 0 5-5V8H4Zm2.8 2.1c.7-.65 1.75-.5 2.2.2.45-.7 1.5-.85 2.2-.2.8.75.55 2-.2 2.7L9 14.5l-2-1.7c-.75-.7-1-1.95-.2-2.7ZM3 21h16v2H3v-2Z"/></svg></span>`;
   }
 
   function openExternalTab(url) {
@@ -6585,14 +5852,20 @@
     const stepLabel = overlay.querySelector('.wbset-onboard-step-label');
 
     const finish = (nextSettings) => {
-      const previousLatestTimeline = loadCfg().defaultLatestTimeline !== false;
+      const previousCfg = loadCfg();
+      const previousLatestTimeline =
+        previousCfg.defaultLatestTimeline !== false;
+      const previousHotSearchHidden = previousCfg.hideHotSearch === true;
       CFG = saveCfg(normalizeCfg(nextSettings));
       GM_setValue(ONBOARDING_DONE_KEY, true);
       overlay.remove();
       let runtimeApplyError = null;
       try {
         WB_INTERNAL.applyConfig?.(CFG);
-        applyPanelSettingsNow();
+        applyPanelSettingsNow({
+          restoredHotSearch:
+            previousHotSearchHidden && CFG.hideHotSearch === false,
+        });
         syncLauncherButton();
       } catch (error) {
         runtimeApplyError = error;
@@ -6616,7 +5889,8 @@
       body.querySelectorAll('[data-wbset-setting]').forEach((input) => {
         const key = input.getAttribute('data-wbset-setting');
         input.checked = !!draft[key];
-        input.addEventListener('change', () => {
+        input.addEventListener('change', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           draft[key] = input.checked;
         });
       });
@@ -6713,21 +5987,32 @@
           </div>`;
         body
           .querySelector('.wbset-onboard-github')
-          ?.addEventListener('click', openProjectGitHub);
+          ?.addEventListener('click', (event) => {
+            if (!isTrustedSettingsEvent(event)) return;
+            openProjectGitHub();
+          });
         body
           .querySelector('.wbset-onboard-bmc')
-          ?.addEventListener('click', openBuyMeACoffee);
+          ?.addEventListener('click', (event) => {
+            if (!isTrustedSettingsEvent(event)) return;
+            openBuyMeACoffee();
+          });
       }
     };
 
     overlay
       .querySelector('.wbset-onboard-skip')
-      .addEventListener('click', () => finish(DEFAULTS));
-    backButton.addEventListener('click', () => {
+      .addEventListener('click', (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
+        finish(DEFAULTS);
+      });
+    backButton.addEventListener('click', (event) => {
+      if (!isTrustedSettingsEvent(event)) return;
       if (stepIndex > 0) stepIndex -= 1;
       render();
     });
-    nextButton.addEventListener('click', () => {
+    nextButton.addEventListener('click', (event) => {
+      if (!isTrustedSettingsEvent(event)) return;
       if (stepIndex < 4) {
         stepIndex += 1;
         render();
@@ -7156,13 +6441,17 @@
       });
       panel
         .querySelector('#wbset-open-onboarding')
-        .addEventListener('click', () => {
+        .addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           closePanel();
           openOnboarding({ force: true });
         });
       panel
         .querySelector('#wbset-star-toggle')
-        .addEventListener('click', () => toggleStarReminder(panel));
+        .addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
+          toggleStarReminder(panel);
+        });
       [
         ['.wbset-author', openProjectGitHub],
         ['.wbset-about-title-link', openProjectGitHub],
@@ -7170,6 +6459,7 @@
         ['.wbset-support-bmc', openBuyMeACoffee],
       ].forEach(([selector, handler]) => {
         panel.querySelector(selector)?.addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           event.preventDefault();
           handler();
         });
@@ -7180,7 +6470,10 @@
         .addEventListener('click', () => refreshUIDManager());
       panel
         .querySelector('#wbset-reload')
-        .addEventListener('click', () => location.reload());
+        .addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
+          location.reload();
+        });
       $uidSearch.addEventListener('input', () => {
         refreshUIDManager({ resetPage: true });
       });
@@ -7200,6 +6493,7 @@
         refreshUIDManager();
       });
       $uidList.addEventListener('click', async (e) => {
+        if (!isTrustedSettingsEvent(e)) return;
         const button = e.target.closest('[data-wbset-remove-uid]');
         if (!button) return;
         const uid = button.getAttribute('data-wbset-remove-uid');
@@ -7212,11 +6506,16 @@
           danger: true,
         });
         if (!confirmed) return;
-        removeFromBL([uid]);
-        syncRuntimeBL({ restoreHidden: true });
-        refreshUIDManager();
+        try {
+          await removeFromBL([uid]);
+          syncRuntimeBL({ restoreHidden: true });
+          refreshUIDManager();
+        } catch (error) {
+          notify(`❌ ${error?.message || '删除失败'}`, { type: 'error' });
+        }
       });
-      panel.querySelector('#wbset-export').addEventListener('click', () => {
+      panel.querySelector('#wbset-export').addEventListener('click', (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         const count = exportBlacklist();
         notify(`✅ 已导出 ${count} 个 UID 到 JSON 文件`, {
           type: 'success',
@@ -7242,7 +6541,8 @@
       });
       panel
         .querySelector('#wbset-import-merge')
-        .addEventListener('click', () => {
+        .addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           fileInputMerge.click();
         });
 
@@ -7275,7 +6575,8 @@
       });
       panel
         .querySelector('#wbset-import-replace')
-        .addEventListener('click', () => {
+        .addEventListener('click', (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           fileInputReplace.click();
         });
 
@@ -7324,9 +6625,13 @@
       };
 
       syncAPI.subscribe(renderSyncState);
-      syncCancelButton.addEventListener('click', () => syncAPI.cancel());
+      syncCancelButton.addEventListener('click', (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
+        syncAPI.cancel();
+      });
 
-      syncStartButtons[0].addEventListener('click', async () => {
+      syncStartButtons[0].addEventListener('click', async (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         try {
           const result = await syncAPI.deltaSync();
           notify(`✅ 官方黑名单增量同步完成！本地屏蔽列表新增 ${result.added} 个 UID`, {
@@ -7338,7 +6643,8 @@
         }
       });
 
-      syncStartButtons[1].addEventListener('click', async () => {
+      syncStartButtons[1].addEventListener('click', async (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         try {
           const result = await syncAPI.syncPages(5);
           notify(`✅ 官方黑名单前 5 页同步完成！本地屏蔽列表新增 ${result.added} 个 UID`, {
@@ -7350,7 +6656,8 @@
         }
       });
 
-      syncStartButtons[2].addEventListener('click', async () => {
+      syncStartButtons[2].addEventListener('click', async (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         try {
           const oldSize = syncAPI.getCount();
           const newSize = await syncAPI.fullSync();
@@ -7366,7 +6673,8 @@
 
       panel
         .querySelector('#wbset-clear-all')
-        .addEventListener('click', async () => {
+        .addEventListener('click', async (event) => {
+          if (!isTrustedSettingsEvent(event)) return;
           const currentCount = readBLSet().size;
           if (currentCount === 0) {
             notify('本地屏蔽列表已经是空的');
@@ -7392,30 +6700,41 @@
           });
           if (!doubleConfirm) return;
 
-          removeFromBL(Array.from(readBLSet()));
-          syncRuntimeBL({ restoreHidden: true });
-          refreshUIDManager({ resetPage: true });
-          notify('✅ 已清空本地屏蔽列表', { type: 'success' });
+          try {
+            await removeFromBL(Array.from(readBLSet()));
+            syncRuntimeBL({ restoreHidden: true });
+            refreshUIDManager({ resetPage: true });
+            notify('✅ 已清空本地屏蔽列表', { type: 'success' });
+          } catch (error) {
+            notify(`❌ ${error?.message || '清空失败'}`, { type: 'error' });
+          }
         });
 
-      panel.querySelector('#wbset-bl-add').addEventListener('click', () => {
+      panel.querySelector('#wbset-bl-add').addEventListener('click', async (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         const ids = parseUIDInput($uids.value);
         if (!ids.length) {
           notify('请输入有效的 UID', { type: 'error' });
           return;
         }
-        const result = addToBL(ids);
-        syncRuntimeBL({ restoreHidden: false });
-        $uids.value = '';
-        refreshUIDManager({ resetPage: true });
-        notify(
-          `已处理 ${ids.length} 个 UID，新增 ${result.added} 个，当前缓存总数：${result.size}`,
-          { type: 'success' }
-        );
+        try {
+          const result = await addToBL(ids);
+          syncRuntimeBL({ restoreHidden: false });
+          $uids.value = '';
+          refreshUIDManager({ resetPage: true });
+          notify(
+            `已处理 ${ids.length} 个 UID，新增 ${result.added} 个，当前缓存总数：${result.size}`,
+            { type: 'success' }
+          );
+        } catch (error) {
+          notify(`❌ ${error?.message || '添加失败'}`, { type: 'error' });
+        }
       });
 
-      panel.querySelector('#wbset-save').addEventListener('click', () => {
+      panel.querySelector('#wbset-save').addEventListener('click', (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
+        const previousHotSearchHidden = CFG.hideHotSearch === true;
         const nextLatestTimeline = $latest.checked;
         CFG.hideHotSearch = $hot.checked;
         CFG.hideSuggestedPeople = $sug.checked;
@@ -7441,7 +6760,10 @@
         let runtimeApplyError = null;
         try {
           WB_INTERNAL.applyConfig?.(CFG);
-          applyPanelSettingsNow();
+          applyPanelSettingsNow({
+            restoredHotSearch:
+              previousHotSearchHidden && CFG.hideHotSearch === false,
+          });
           syncLauncherButton();
         } catch (error) {
           runtimeApplyError = error;
@@ -7507,7 +6829,10 @@
       `;
       btn.title = `${SCRIPT_NAME} 设置`;
       btn.setAttribute('aria-label', `打开 ${SCRIPT_NAME} 设置`);
-      btn.addEventListener('click', () => openPanel('general'));
+      btn.addEventListener('click', (event) => {
+        if (!isTrustedSettingsEvent(event)) return;
+        openPanel('general');
+      });
       document.documentElement.appendChild(btn);
     }
   }
@@ -7528,9 +6853,13 @@
       (_name, _oldValue, _newValue, remote) => {
         if (!remote) return;
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
+        const previousHotSearchHidden = CFG.hideHotSearch === true;
         CFG = loadCfg();
         WB_INTERNAL.applyConfig?.(CFG);
-        applyPanelSettingsNow();
+        applyPanelSettingsNow({
+          restoredHotSearch:
+            previousHotSearchHidden && CFG.hideHotSearch === false,
+        });
         syncLauncherButton();
         reconcileHomeTimelineSetting(
           previousLatestTimeline,
