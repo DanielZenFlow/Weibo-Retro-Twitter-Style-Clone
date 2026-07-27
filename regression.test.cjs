@@ -430,8 +430,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.3\.2/);
-assert.match(source, /const SCRIPT_VERSION = '2\.3\.2'/);
+assert.match(source, /@version\s+2\.3\.0/);
+assert.match(source, /const SCRIPT_VERSION = '2\.3\.0'/);
 // 元数据版本号与运行时常量必须始终一致，否则设置面板会显示错误版本。
 assert.equal(
   source.match(/@version\s+(\S+)/)?.[1],
@@ -565,14 +565,11 @@ assert.match(
   source,
   /\.vue-recycle-scroller__item-view > \$\{BLOCKED_CONTENT_HIDE_SELECTOR\}[\s\S]*?height:\s*1px !important;[\s\S]*?visibility:\s*hidden !important;/
 );
-// 旧的 192px「分页保护间距」对微博的哨兵毫无作用：哨兵用 rootMargin 1500px
-// 的 IntersectionObserver 监听，推开 192px 根本不会改变可见性判定；而且它取的
-// 是第一个 __slot（前置槽，永远是空的），实际从未生效过。
-assert.doesNotMatch(source, /NATIVE_PAGINATION_GUARD/);
 assert.match(
   source,
-  /\[\$\{TIMELINE_LOADER_NUDGE_ATTR\}="1"\]\s*\{[\s\S]*?display:\s*none !important;/
+  /\.vue-recycle-scroller\[\$\{NATIVE_PAGINATION_GUARD_ATTR\}="1"\][\s\S]*?margin-top:\s*\$\{NATIVE_PAGINATION_GUARD_PX\}px !important;/
 );
+assert.match(source, /const NATIVE_PAGINATION_GUARD_PX = 192;/);
 assert.doesNotMatch(
   source,
   /\[class\*="vue-recycle-scroller__item-view"\]\s*\{[\s\S]*?(?:transform|min-height):/
@@ -582,7 +579,7 @@ assert.match(
     '  function hideContentRoot(',
     '  let floatingVideoSuppressUntil ='
   ),
-  /markTimelineScrollerCollapsed\(target\)[\s\S]*?BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
+  /prepareNativeTimelinePaginationGuard\(target\)[\s\S]*?BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
 );
 const floatingVideoSuppressionSource = sourceBetween(
   '  function suppressFloatingVideoPlayers(',
@@ -681,293 +678,36 @@ const nativeCardWithoutAria = new FakeRestorableElement({
 blockedRestoreContext.clearOwnBlockedContentHideState(nativeCardWithoutAria);
 assert.equal(nativeCardWithoutAria.hasAttribute('aria-hidden'), false);
 assert.equal(nativeCardWithoutAria.style.cssText, nativeStyleBeforeRestore);
-const timelineStallSource = sourceBetween(
-  '  function findNativeTimelineLoaderCard(scroller) {',
+const paginationGuardSource = sourceBetween(
+  '  function getNativeTimelinePaginationParts(',
   '  function compactVirtualScrollerGaps('
 );
-// 停滞恢复只允许隐藏/恢复哨兵，绝不能改行坐标、外层高度或替微博滚动。
+assert.match(
+  paginationGuardSource,
+  /scroller\.setAttribute\(NATIVE_PAGINATION_GUARD_ATTR, '1'\)/
+);
+assert.match(
+  paginationGuardSource,
+  /scroller\.removeAttribute\(NATIVE_PAGINATION_GUARD_ATTR\)/
+);
+assert.match(
+  paginationGuardSource,
+  /viewport \+ viewRect\.height \+ NATIVE_PAGINATION_GUARD_PX/
+);
 assert.doesNotMatch(
-  timelineStallSource,
+  paginationGuardSource,
   /(?:transform|min-height|scrollTo|scrollBy)\s*[=:]/
-);
-// 后置槽才有哨兵，必须遍历全部 __slot，不能只 querySelector 第一个。
-assert.match(
-  timelineStallSource,
-  /querySelectorAll\(\s*'?\s*:scope > \.vue-recycle-scroller__slot/
-);
-assert.doesNotMatch(
-  timelineStallSource,
-  /querySelector\(\s*\n?\s*'?:scope > \.vue-recycle-scroller__slot/
-);
-// 后台标签页里 rAF 会停摆，必须有定时兜底，否则哨兵会被永久隐藏。
-assert.match(
-  timelineStallSource,
-  /setTimeout\(restore, TIMELINE_NUDGE_RESTORE_MS\)/
-);
-assert.match(
-  timelineStallSource,
-  /document\.visibilityState !== 'visible'/
-);
-// 只在脚本确实折叠过内容时才补偿，避免干预未被影响的原生分页。
-assert.match(
-  timelineStallSource,
-  /hasAttribute\(TIMELINE_COLLAPSED_ANY_ATTR\)/
-);
-assert.match(
-  timelineStallSource,
-  /timelineStall\.staleNudges >= TIMELINE_NUDGE_MAX_STALE/
-);
-// 停滞判定绝不能看 document.scrollHeight：微博的图片、视频和侧栏会持续改变它，
-// 这些噪声会把静止计时一直清零，补偿就永远不会触发（v2.3.1 正是栽在这里）。
-assert.doesNotMatch(timelineStallSource, /documentElement[^\n]*scrollHeight/);
-assert.match(
-  timelineStallSource,
-  /readTimelineContentHeight\(scroller\)/
-);
-assert.match(
-  sourceBetween(
-    '  function readTimelineContentHeight(scroller) {',
-    '  const timelineStall = {'
-  ),
-  /vue-recycle-scroller__item-wrapper[\s\S]*?wrapper\.style\.minHeight/
-);
-// 只有大幅增长才算"新一页到了"，否则图片撑开的小幅重测会不断重置计时。
-assert.match(
-  timelineStallSource,
-  /timelineStall\.lastContentHeight >\s*TIMELINE_PAGE_GROWTH_PX/
 );
 assert.match(
   virtualGapSource,
-  /recoverStalledTimelinePagination\(\)/
+  /updateNativeTimelinePaginationGuards\(scanRoot\)/
 );
-// 哨兵容器的选取必须与调用来源无关：详情弹层等次级列表也是
-// vue-recycle-scroller，按调用方传入的节点选会让状态在两个容器间来回重置。
-assert.match(
-  timelineStallSource,
-  /function findPaginatingTimeline\(\)[\s\S]*?querySelectorAll\('\.vue-recycle-scroller'\)/
-);
-assert.doesNotMatch(
-  timelineStallSource,
-  /function recoverStalledTimelinePagination\(root/
-);
-
-// 行为验证：哨兵在后置槽里，findNativeTimelineLoaderCard 必须找得到，
-// 并且返回的是槽的直接子节点（微博用来包裹 spinner 的那张卡片）。
-// 最小 DOM 替身，只实现该函数用到的能力：:scope 直接子节点查询、
-// 后代类名查询和 parentElement 链。
-class FakeElement {
-  constructor(tagName = 'div') {
-    this.tagName = String(tagName).toUpperCase();
-    this.className = '';
-    this.children = [];
-    this.parentElement = null;
-  }
-  appendChild(child) {
-    child.parentElement = this;
-    this.children.push(child);
-    return child;
-  }
-  hasClass(cls) {
-    return String(this.className || '')
-      .split(/\s+/)
-      .filter(Boolean)
-      .includes(cls);
-  }
-  querySelectorAll(selector) {
-    const scoped = selector.startsWith(':scope >');
-    const cls = selector.replace(/^:scope >\s*/, '').replace(/^\./, '').trim();
-    if (scoped) return this.children.filter((child) => child.hasClass(cls));
-    const found = [];
-    const walk = (node) => {
-      node.children.forEach((child) => {
-        if (child.hasClass(cls)) found.push(child);
-        walk(child);
-      });
-    };
-    walk(this);
-    return found;
-  }
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-}
-const loaderLookupContext = vm.createContext({ Element: FakeElement });
-vm.runInContext(
-  `${sourceBetween(
-    '  function findNativeTimelineLoaderCard(scroller) {',
-    '  function markTimelineScrollerCollapsed('
-  )}
-  globalThis.findLoaderCard = findNativeTimelineLoaderCard;`,
-  loaderLookupContext
-);
-const makeSlot = () => {
-  const slot = new FakeElement('div');
-  slot.className = 'vue-recycle-scroller__slot';
-  return slot;
-};
-const fakeScroller = new FakeElement('div');
-fakeScroller.className = 'vue-recycle-scroller';
-const beforeSlot = makeSlot();
-const afterSlot = makeSlot();
-const loaderCard = new FakeElement('div');
-loaderCard.className = 'woo-panel-main';
-const spinner = new FakeElement('i');
-spinner.className = 'woo-spinner-main';
-loaderCard.appendChild(spinner);
-afterSlot.appendChild(loaderCard);
-fakeScroller.appendChild(beforeSlot);
-fakeScroller.appendChild(afterSlot);
-assert.equal(
-  loaderLookupContext.findLoaderCard(fakeScroller),
-  loaderCard,
-  'loader lookup must skip the empty before-slot and return the after-slot card'
-);
-assert.equal(loaderLookupContext.findLoaderCard(makeSlot()), null);
-assert.equal(loaderLookupContext.findLoaderCard(null), null);
-
-// 行为验证：v2.3.1 的补偿因为触发条件写坏而从未真正执行过，纯正则断言抓不到
-// 这种问题。这里直接跑一遍状态机，模拟"哨兵停在视口里、列表总高不再增长"的
-// 卡死现场，确认补偿会触发、并且在健康/后台/未折叠的情况下保持沉默。
-function runTimelineStallScenario({
-  sentinelTop = 670,
-  visibilityState = 'visible',
-  collapsed = true,
-  pageGrowthPx = 0,
-  ticks = 60,
-} = {}) {
-  const stallSource =
-    sourceBetween(
-      '  const TIMELINE_COLLAPSED_ANY_ATTR =',
-      '  const VIRTUAL_VIEW_SELECTOR ='
-    ) +
-    sourceBetween(
-      '  function findNativeTimelineLoaderCard(scroller) {',
-      '  function compactVirtualScrollerGaps('
-    );
-
-  let contentHeight = 7502;
-  const nudges = [];
-  class StallElement {}
-  const spinner = new StallElement();
-  spinner.className = 'woo-spinner-main';
-  const card = new StallElement();
-  card.className = 'woo-panel-main';
-  card.getBoundingClientRect = () => ({
-    top: sentinelTop,
-    bottom: sentinelTop + 40,
-  });
-  card.setAttribute = () => {};
-  card.removeAttribute = () => {};
-  spinner.parentElement = card;
-  const makeStallSlot = (kids) => {
-    const slot = new StallElement();
-    slot.className = 'vue-recycle-scroller__slot';
-    slot.querySelector = (sel) =>
-      sel === '.woo-spinner-main' && kids.length ? spinner : null;
-    kids.forEach((kid) => {
-      kid.parentElement = slot;
-    });
-    return slot;
-  };
-  const slots = [makeStallSlot([]), makeStallSlot([card])];
-  const wrapper = {
-    style: {
-      get minHeight() {
-        return `${contentHeight}px`;
-      },
-    },
-    getBoundingClientRect: () => ({ height: contentHeight }),
-  };
-  const scroller = new StallElement();
-  scroller.className = 'vue-recycle-scroller';
-  scroller.matches = (sel) => sel === '.vue-recycle-scroller';
-  scroller.closest = () => scroller;
-  scroller.hasAttribute = () => collapsed;
-  scroller.querySelectorAll = (sel) => (sel.includes('__slot') ? slots : []);
-  scroller.querySelector = (sel) =>
-    sel.includes('item-wrapper') ? wrapper : null;
-
-  // 详情弹层里的评论列表同样是 vue-recycle-scroller，但没有分页哨兵。
-  // 它排在时间线容器前面，用来复现"按调用方选容器就会来回重置"的回归。
-  const decoyScroller = new StallElement();
-  decoyScroller.className = 'vue-recycle-scroller';
-  decoyScroller.matches = (sel) => sel === '.vue-recycle-scroller';
-  decoyScroller.closest = () => decoyScroller;
-  decoyScroller.hasAttribute = () => collapsed;
-  decoyScroller.querySelectorAll = (sel) =>
-    sel.includes('__slot') ? [makeStallSlot([])] : [];
-  decoyScroller.querySelector = () => null;
-
-  const fakeDocument = {
-    visibilityState,
-    querySelector: () => decoyScroller,
-    querySelectorAll: (sel) =>
-      sel === '.vue-recycle-scroller' ? [decoyScroller, scroller] : [],
-  };
-  const factory = new Function(
-    'Element',
-    'document',
-    'window',
-    'isRelationshipListPage',
-    'requestAnimationFrame',
-    'setTimeout',
-    'onNudge',
-    `${stallSource}
-     nudgeNativeTimelineLoader = onNudge;
-     return { recover: recoverStalledTimelinePagination };`
-  );
-  const instance = factory(
-    StallElement,
-    fakeDocument,
-    { innerHeight: 711 },
-    () => false,
-    (fn) => fn,
-    (fn) => fn,
-    () => {
-      nudges.push(contentHeight);
-      contentHeight += pageGrowthPx;
-    }
-  );
-
-  const realNow = Date.now;
-  let clock = 1_000_000;
-  Date.now = () => clock;
-  try {
-    for (let i = 0; i < ticks; i += 1) {
-      instance.recover();
-      clock += 400;
-    }
-  } finally {
-    Date.now = realNow;
-  }
-  return nudges.length;
-}
-
-// 卡死现场：补偿必须触发，且在时间线真的到头时收敛到上限。
-assert.equal(
-  runTimelineStallScenario({ pageGrowthPx: 0 }),
-  3,
-  'a stalled timeline must be nudged, then give up after the retry cap'
-);
-// 每次补偿都换来新的一页时，必须能一直翻下去，而不是三次之后就永久停摆。
-assert.ok(
-  runTimelineStallScenario({ pageGrowthPx: 900 }) > 3,
-  'pagination must keep going while each nudge actually loads a page'
-);
-// 哨兵被顶出视口 = 原生分页正常，不能插手。
-assert.equal(runTimelineStallScenario({ sentinelTop: 4000 }), 0);
-// 后台标签页不渲染，翻转不会被投递，必须完全不动。
-assert.equal(runTimelineStallScenario({ visibilityState: 'hidden' }), 0);
-// 没折叠过任何内容就不是脚本造成的，交给微博原生行为。
-assert.equal(runTimelineStallScenario({ collapsed: false }), 0);
-// 关系列表页要还原成原生形态，遗留的哨兵隐藏标记必须一并清掉，
-// 否则哨兵会被永久隐藏。
 assert.match(
   sourceBetween(
     '  function restoreHiddenRelationshipItems(',
     '  function clearOwnBlockedContentHideState('
   ),
-  /removeAttribute\(TIMELINE_LOADER_NUDGE_ATTR\)/
+  /removeAttribute\(NATIVE_PAGINATION_GUARD_ATTR\)/
 );
 class FakeHideElement {
   constructor(kind, parentElement = null) {
@@ -1116,34 +856,6 @@ assert.doesNotMatch(source, /queuedPanelRefreshTimer/);
 assert.match(
   source,
   /const syncTabUI = \(\) => \{\s*if \(!timelineDefault\.value\) return;/
-);
-
-const forceLatestTabSource = sourceBetween(
-  '  (function forceLatestTab() {',
-  '  // === 本地屏蔽列表与新浪微博官方黑名单同步 ==='
-);
-// 微博不写 aria-selected，按它判断选中态等于"永远未选中"，脚本会每次都
-// 点回「最新微博」，用户再也停不到「全部关注」。选中判定必须走共享实现。
-assert.doesNotMatch(
-  forceLatestTabSource,
-  /getAttribute\('aria-selected'\)\s*!==\s*'true'/
-);
-assert.match(forceLatestTabSource, /!isTimelineTabActive\(btn\)/);
-// 「全部关注」就是主页根路由，所以必须记住用户亲手点过的分栏，
-// 否则路由回调会把人从「全部关注」立刻弹回「最新微博」。
-assert.match(forceLatestTabSource, /userJustChoseAnotherTab\(\)/);
-assert.match(forceLatestTabSource, /isTrustedUserEvent\(event\)/);
-assert.match(
-  forceLatestTabSource,
-  /manualTabChoiceTitle !== LATEST_TITLE/
-);
-// 设置面板侧的分栏判定必须复用同一实现，不能再各留一份。
-assert.match(
-  sourceBetween(
-    '  function findTimelineTab(title) {',
-    '  function openNativeHomeTimeline('
-  ),
-  /WB_INTERNAL\.timelineTabs\.find\(title\)[\s\S]*?WB_INTERNAL\.timelineTabs\.isActive\(tab\)/
 );
 
 let mutationObserverInstances = 0;
@@ -1494,72 +1206,34 @@ const reconcileTimelineSource = sourceBetween(
 );
 assert.match(reconcileTimelineSource, /openLatestHomeTimeline\(\)/);
 assert.match(reconcileTimelineSource, /openNativeHomeTimeline\(\)/);
-// 微博的分栏节点上没有 aria-selected / aria-current，选中态只体现为带构建
-// 哈希的类名（例如 _cur_118ye_33）。替身必须还原这一点，否则"永远判成未
-// 选中、于是反复点回最新微博"的回归会再次溜过去。
-const SELECTED_TAB_CLASS = '_cur_118ye_33';
 class FakeTimelineTab {
   constructor(title) {
     this.title = title;
+    this.selected = false;
     this.clicks = 0;
-    this.classList = ['woo-box-flex', 'woo-box-alignCenter', '_main_118ye_2'];
-  }
-  get selected() {
-    return this.classList.includes(SELECTED_TAB_CLASS);
-  }
-  set selected(value) {
-    const index = this.classList.indexOf(SELECTED_TAB_CLASS);
-    if (value && index === -1) this.classList.push(SELECTED_TAB_CLASS);
-    if (!value && index !== -1) this.classList.splice(index, 1);
   }
   click() {
     this.clicks++;
     this.selected = true;
   }
   getAttribute(name) {
-    if (name === 'title') return this.title;
+    if (name === 'aria-selected') return this.selected ? 'true' : null;
     return null;
   }
 }
 const allFollowingTimelineTab = new FakeTimelineTab('全部关注');
 const latestTimelineTab = new FakeTimelineTab('最新微博');
-const fakeTimelineDocument = {
-  querySelector(selector) {
-    if (selector.includes('全部关注')) return allFollowingTimelineTab;
-    if (selector.includes('最新微博')) return latestTimelineTab;
-    return null;
-  },
-};
-// 用脚本里真正的实现构造 WB_INTERNAL.timelineTabs，保证设置面板与默认分栏
-// 逻辑共用同一套判定。
-const timelineTabHelperContext = vm.createContext({
-  HTMLElement: FakeTimelineTab,
-  document: fakeTimelineDocument,
-});
-vm.runInContext(
-  `${sourceBetween(
-    '  function findTimelineTabElement(title) {',
-    '  WB_INTERNAL.timelineTabs = Object.freeze({'
-  )}
-  globalThis.tabsAPI = { find: findTimelineTabElement, isActive: isTimelineTabActive };`,
-  timelineTabHelperContext
-);
-const timelineTabsAPI = timelineTabHelperContext.tabsAPI;
-assert.equal(timelineTabsAPI.isActive(latestTimelineTab), false);
-latestTimelineTab.selected = true;
-assert.equal(
-  timelineTabsAPI.isActive(latestTimelineTab),
-  true,
-  'selection must be detected from the hashed _cur_ class, not aria-selected'
-);
-latestTimelineTab.selected = false;
-assert.equal(timelineTabsAPI.isActive(null), false);
-assert.equal(timelineTabsAPI.find('最新微博'), latestTimelineTab);
 const timelineAssignments = [];
 const timelineContext = vm.createContext({
-  WB_INTERNAL: { dom: { schedule() {} }, timelineTabs: timelineTabsAPI },
+  WB_INTERNAL: { dom: { schedule() {} } },
   HTMLElement: FakeTimelineTab,
-  document: fakeTimelineDocument,
+  document: {
+    querySelector(selector) {
+      if (selector.includes('全部关注')) return allFollowingTimelineTab;
+      if (selector.includes('最新微博')) return latestTimelineTab;
+      return null;
+    },
+  },
   location: {
     hostname: 'weibo.com',
     pathname: '/',

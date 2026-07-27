@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.3.2
+// @version      2.3.0
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -41,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.3.2';
+  const SCRIPT_VERSION = '2.3.0';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -888,98 +888,33 @@
   // === 默认切换到"最新微博"分栏 ===
   // 只同步 Tab 与路由，不拦截"全部关注"接口。这样用户临时切回
   // "全部关注"时仍能使用微博原生分页，不会收到伪造的空响应。
-  const TIMELINE_TAB_TITLES = Object.freeze([
-    '全部关注',
-    '最新微博',
-    '特别关注',
-    '好友圈',
-    '悄悄关注',
-  ]);
-
-  function findTimelineTabElement(title) {
-    const tab = document.querySelector(`[role="link"][title="${title}"]`);
-    return tab instanceof HTMLElement ? tab : null;
-  }
-
-  // 微博不会在分栏节点上写 aria-selected / aria-current，选中态只体现为带构建
-  // 哈希的类名（例如 _cur_118ye_33）。只读 aria 属性会把"已选中"永远判成
-  // "未选中"，脚本于是每次都点一遍「最新微博」，用户再也停不到「全部关注」。
-  function isTimelineTabActive(tab) {
-    if (!tab) return false;
-    if (
-      tab.getAttribute('aria-selected') === 'true' ||
-      tab.getAttribute('aria-current') === 'page'
-    ) {
-      return true;
-    }
-    return Array.from(tab.classList || []).some((className) =>
-      /(?:^|_)cur(?:_|$)|active|selected/i.test(className)
-    );
-  }
-
-  WB_INTERNAL.timelineTabs = Object.freeze({
-    titles: TIMELINE_TAB_TITLES,
-    find: findTimelineTabElement,
-    isActive: isTimelineTabActive,
-  });
-
   (function forceLatestTab() {
-    const LATEST_TITLE = '最新微博';
-    // 「全部关注」用的就是主页根路由 "/"，其余分栏是 /mygroups?gid=...。
-    // 因此单看 pathname 无法区分"用户点了别的分栏"和"从站内其他页面回到
-    // 主页"，必须记住用户最后一次亲手点击的分栏，否则点「全部关注」会被
-    // 路由回调立刻弹回「最新微博」。
-    const MANUAL_TAB_CHOICE_TTL_MS = 4000;
-    let manualTabChoiceTitle = '';
-    let manualTabChoiceAt = 0;
-
-    const isHomeRootRoute = () =>
-      ['weibo.com', 'www.weibo.com'].includes(location.hostname) &&
-      (location.pathname === '/' || location.pathname === '');
-
-    const isHomeTimelineRoute = () =>
-      ['weibo.com', 'www.weibo.com'].includes(location.hostname) &&
-      (location.pathname === '/' ||
-        location.pathname === '' ||
-        /^\/mygroups(?:\/|$)/.test(location.pathname));
-
-    const userJustChoseAnotherTab = () =>
-      !!manualTabChoiceTitle &&
-      manualTabChoiceTitle !== LATEST_TITLE &&
-      Date.now() - manualTabChoiceAt < MANUAL_TAB_CHOICE_TTL_MS;
-
-    document.addEventListener(
-      'click',
-      (event) => {
-        if (!isTrustedUserEvent(event)) return;
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const tab = target.closest('[role="link"][title]');
-        const title = tab && tab.getAttribute('title');
-        if (!title || !TIMELINE_TAB_TITLES.includes(title)) return;
-        manualTabChoiceTitle = title;
-        manualTabChoiceAt = Date.now();
-      },
-      true
-    );
+    const isHomePage = () => {
+      return (
+        ['weibo.com', 'www.weibo.com'].includes(location.hostname) &&
+        (location.pathname === '/' || location.pathname === '')
+      );
+    };
 
     // DOM层：确保Tab UI状态正确（点击切换）
     const syncTabUI = () => {
       if (!timelineDefault.value) return;
-      if (!isHomeTimelineRoute()) return;
-      if (userJustChoseAnotherTab()) return;
-      const btn = findTimelineTabElement(LATEST_TITLE);
-      if (btn && !isTimelineTabActive(btn)) btn.click();
+      const btn = document.querySelector('[role="link"][title="最新微博"]');
+      if (btn && btn.getAttribute('aria-selected') !== 'true') {
+        btn.click();
+      }
     };
 
-    if (isHomeRootRoute() && timelineDefault.value) {
+    if (isHomePage() && timelineDefault.value) {
       // 使用 MutationObserver 监听Tab出现后立即点击（比setTimeout更快）
       const tabObserver = new MutationObserver((mutations, obs) => {
-        const btn = findTimelineTabElement(LATEST_TITLE);
-        if (!btn) return;
-        obs.disconnect();
-        if (userJustChoseAnotherTab()) return;
-        if (!isTimelineTabActive(btn)) btn.click();
+        const btn = document.querySelector('[role="link"][title="最新微博"]');
+        if (btn) {
+          if (btn.getAttribute('aria-selected') !== 'true') {
+            btn.click();
+          }
+          obs.disconnect();
+        }
       });
 
       // 尽早开始监听
@@ -1004,12 +939,15 @@
     const handleRouteChange = () => {
       syncRelationshipPageMode();
       const newPath = location.pathname;
-      if (newPath === currentPath) return;
-      currentPath = newPath;
-      if (!isHomeRootRoute()) return;
+      if (newPath !== currentPath) {
+        const isNowHome = newPath === '/' || newPath === '';
+        currentPath = newPath;
 
-      WB_INTERNAL.dom.schedule('timeline-tab-primary', syncTabUI, 100);
-      WB_INTERNAL.dom.schedule('timeline-tab-followup', syncTabUI, 450);
+        if (isNowHome) {
+          WB_INTERNAL.dom.schedule('timeline-tab-primary', syncTabUI, 100);
+          WB_INTERNAL.dom.schedule('timeline-tab-followup', syncTabUI, 450);
+        }
+      }
     };
 
     WB_INTERNAL.dom.subscribeRoute('timeline-default', handleRouteChange);
@@ -1087,24 +1025,9 @@
     '[class*="promoted"]',
     '[class*="Promoted"]',
   ].join(',');
-  // 微博的"加载下一页"哨兵用 vue-observe-visibility 监听，rootMargin 为
-  // 1500px，并且只在可见性发生翻转（不可见 -> 可见）时才回调一次。正常情况下
-  // 新一页会把哨兵顶到 1500px 之外，于是下次滚动回来才能再次触发。脚本把被
-  // 屏蔽的微博和广告折叠成 1px 测量壳，新一页的实际高度可能不足 1500px，哨兵
-  // 便一直停在"已可见"状态，回调不再触发——表现为拉到底后再也加载不出内容。
-  // 检测到这种停滞时，短暂隐藏哨兵再恢复，制造一次可见性翻转让微博自己续页。
-  // 触发条件必须避开 document.scrollHeight：微博的图片、视频和侧栏会持续改变
-  // 它，任何"高度还在变就算正常"的判断都会被这些噪声一直清零，永远等不到停滞。
-  // 改用 DynamicScroller 自己维护的列表总高，并且只把大幅增长视为"新一页到了"。
-  const TIMELINE_COLLAPSED_ANY_ATTR = 'data-__wb_timeline_collapsed';
-  const TIMELINE_LOADER_NUDGE_ATTR = 'data-__wb_timeline_loader_nudge';
-  const TIMELINE_SENTINEL_MARGIN_PX = 300;
-  const TIMELINE_PAGE_GROWTH_PX = 400;
-  const TIMELINE_STALL_IDLE_MS = 1200;
-  const TIMELINE_NUDGE_COOLDOWN_MS = 1200;
-  const TIMELINE_NUDGE_MAX_STALE = 3;
-  const TIMELINE_NUDGE_RESTORE_MS = 300;
-  const TIMELINE_STALL_POLL_MS = 400;
+  const NATIVE_PAGINATION_GUARD_ATTR =
+    'data-__wb_native_pagination_guard';
+  const NATIVE_PAGINATION_GUARD_PX = 192;
   const VIRTUAL_VIEW_SELECTOR = [
     '.vue-recycle-scroller__item-view',
     '[class*="vue-recycle-scroller__item-view"]',
@@ -1925,16 +1848,17 @@
         visibility: hidden !important;
         pointer-events: none !important;
       }
-      [${TIMELINE_LOADER_NUDGE_ATTR}="1"] {
+      .vue-recycle-scroller[${NATIVE_PAGINATION_GUARD_ATTR}="1"] >
+      .vue-recycle-scroller__slot > *:has(.woo-spinner-main) {
         /*
-         * Weibo's next-page sentinel is watched by vue-observe-visibility,
-         * which only re-invokes its callback when the intersecting state
-         * flips. Hiding the sentinel for a frame makes IntersectionObserver
-         * report it as not intersecting, so restoring it produces the
-         * false -> true transition Weibo needs to request the next page.
-         * The attribute is removed again within a few frames.
+         * Collapsing one of the last rows can move Weibo's native infinite
+         * loader into the viewport in the same layout pass. Its Vue component
+         * can then enter a loading state before the next cursor is ready and
+         * never issue the max_id request. Keep the native loader just outside
+         * the viewport while the blocked tail row is being remeasured. This
+         * does not resize or reposition recycler items or their wrapper.
          */
-        display: none !important;
+        margin-top: ${NATIVE_PAGINATION_GUARD_PX}px !important;
       }
       html[${RELATIONSHIP_PAGE_ATTR}="1"] ${BLOCKED_CONTENT_HIDE_SELECTOR} {
         display: revert !important;
@@ -2735,8 +2659,10 @@
     syncRelationshipPageMode();
     if (!isRelationshipListPage() || !document.querySelectorAll) return;
     document
-      .querySelectorAll(`[${TIMELINE_LOADER_NUDGE_ATTR}]`)
-      .forEach((card) => card.removeAttribute(TIMELINE_LOADER_NUDGE_ATTR));
+      .querySelectorAll(`[${NATIVE_PAGINATION_GUARD_ATTR}]`)
+      .forEach((scroller) =>
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR)
+      );
     const nodes = new Set();
     const collect = (scope) => {
       if (!scope || !scope.querySelectorAll) return;
@@ -3390,7 +3316,7 @@
     }
     rememberBlockedContentVideos(target);
     pauseVideosIn(target);
-    markTimelineScrollerCollapsed(target);
+    prepareNativeTimelinePaginationGuard(target);
     target.setAttribute(
       BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR,
       target.hasAttribute('aria-hidden')
@@ -3612,155 +3538,87 @@
     });
   }
 
-  // vue-virtual-scroller 会渲染两个 .vue-recycle-scroller__slot（前置和后置），
-  // 微博的加载哨兵在后置那个里。按 querySelector 只取第一个永远拿不到哨兵。
-  function findNativeTimelineLoaderCard(scroller) {
-    if (!(scroller instanceof Element)) return null;
-    const slots = scroller.querySelectorAll(
+  function getNativeTimelinePaginationParts(target) {
+    if (!(target instanceof Element)) return null;
+    const view = target.closest(VIRTUAL_VIEW_SELECTOR);
+    const scroller = view?.closest('.vue-recycle-scroller');
+    const slot = scroller?.querySelector(
       ':scope > .vue-recycle-scroller__slot'
     );
-    for (const slot of slots) {
-      const spinner = slot.querySelector('.woo-spinner-main');
-      if (!spinner) continue;
-      let card = spinner;
-      while (card.parentElement && card.parentElement !== slot) {
-        card = card.parentElement;
-      }
-      return card;
-    }
-    return null;
+    const loader = slot?.querySelector('.woo-spinner-main');
+    if (!view || !scroller || !slot || !loader) return null;
+    return { view, scroller, slot, loader };
   }
 
-  function markTimelineScrollerCollapsed(target) {
-    if (!(target instanceof Element)) return;
-    const scroller = target.closest('.vue-recycle-scroller');
-    if (scroller) scroller.setAttribute(TIMELINE_COLLAPSED_ANY_ATTR, '1');
-  }
-
-  // DynamicScroller 把列表总高写在 item-wrapper 的 min-height 上，这个数字只随
-  // 条目增删和重新测量变化，不受列表之外的图片、侧栏、页脚影响。
-  function readTimelineContentHeight(scroller) {
-    if (!(scroller instanceof Element)) return 0;
-    const wrapper = scroller.querySelector(
-      ':scope > .vue-recycle-scroller__item-wrapper'
-    );
-    if (!wrapper) return 0;
-    const declared = parseFloat(wrapper.style.minHeight || '');
-    if (Number.isFinite(declared)) return Math.round(declared);
-    return Math.round(wrapper.getBoundingClientRect().height);
-  }
-
-  const timelineStall = {
-    scroller: null,
-    inViewSince: 0,
-    lastNudgeAt: 0,
-    staleNudges: 0,
-    lastContentHeight: 0,
-    nudging: false,
-  };
-
-  function resetTimelineStallState(scroller) {
-    timelineStall.scroller = scroller;
-    timelineStall.inViewSince = 0;
-    timelineStall.lastNudgeAt = 0;
-    timelineStall.staleNudges = 0;
-    timelineStall.lastContentHeight = scroller
-      ? readTimelineContentHeight(scroller)
-      : 0;
-  }
-
-  // 页面上可能同时存在多个 vue-recycle-scroller（例如微博详情弹层里的评论列表）。
-  // 若按调用方传入的节点去选，不同入口会命中不同的滚动容器，状态被反复重置，
-  // 静止计时永远走不满、补偿永远不触发。这里固定选中真正带分页哨兵的那一个，
-  // 与调用来源无关。
-  function findPaginatingTimeline() {
-    const scrollers = document.querySelectorAll('.vue-recycle-scroller');
-    for (const scroller of scrollers) {
-      const card = findNativeTimelineLoaderCard(scroller);
-      if (card) return { scroller, card };
-    }
-    return null;
-  }
-
-  function nudgeNativeTimelineLoader(card) {
-    if (timelineStall.nudging) return;
-    timelineStall.nudging = true;
-    card.setAttribute(TIMELINE_LOADER_NUDGE_ATTR, '1');
-    const restore = () => {
-      if (!timelineStall.nudging) return;
-      timelineStall.nudging = false;
-      card.removeAttribute(TIMELINE_LOADER_NUDGE_ATTR);
-    };
-    // 两帧足够让 IntersectionObserver 观察到"不可见"，再恢复即产生翻转。
-    requestAnimationFrame(() => requestAnimationFrame(restore));
-    // 标签页切到后台时 rAF 会停摆，必须留一条定时兜底，避免哨兵被永久隐藏。
-    setTimeout(restore, TIMELINE_NUDGE_RESTORE_MS);
-  }
-
-  function recoverStalledTimelinePagination() {
+  function prepareNativeTimelinePaginationGuard(target) {
     if (isRelationshipListPage()) return;
-    if (typeof document === 'undefined') return;
-    // 后台标签页里渲染和 IntersectionObserver 都是冻结的，翻转不会被投递。
-    if (document.visibilityState && document.visibilityState !== 'visible') {
-      return;
-    }
-
-    const found = findPaginatingTimeline();
-    if (!found) {
-      resetTimelineStallState(null);
-      return;
-    }
-    const { scroller, card } = found;
-    if (timelineStall.scroller !== scroller) {
-      resetTimelineStallState(scroller);
-      return;
-    }
-
-    // 只补偿脚本自己造成的高度缩水；没折叠过任何内容就不去碰原生行为。
-    if (!scroller.hasAttribute(TIMELINE_COLLAPSED_ANY_ATTR)) return;
-
-    const now = Date.now();
-    const rect = card.getBoundingClientRect();
+    const parts = getNativeTimelinePaginationParts(target);
+    if (!parts) return;
+    const { view, scroller, loader } = parts;
+    const viewRect = view.getBoundingClientRect();
+    const loaderRect = loader.getBoundingClientRect();
     const viewport = Math.max(window.innerHeight || 0, 1);
-    const inView =
-      rect.top <= viewport + TIMELINE_SENTINEL_MARGIN_PX &&
-      rect.bottom >= -TIMELINE_SENTINEL_MARGIN_PX;
-    if (!inView) {
-      // 哨兵被顶出视口，说明分页恢复正常，重新计时并清空失败计数。
-      timelineStall.inViewSince = 0;
-      timelineStall.staleNudges = 0;
-      timelineStall.lastContentHeight = readTimelineContentHeight(scroller);
-      return;
+    const loaderNearViewport =
+      loaderRect.bottom >= -NATIVE_PAGINATION_GUARD_PX &&
+      loaderRect.top <=
+        viewport + viewRect.height + NATIVE_PAGINATION_GUARD_PX;
+    const rowNearLoader =
+      loaderRect.top - viewRect.bottom <= viewport &&
+      viewRect.top - loaderRect.bottom <= viewport;
+    if (loaderNearViewport && rowNearLoader) {
+      scroller.setAttribute(NATIVE_PAGINATION_GUARD_ATTR, '1');
     }
+  }
 
-    const contentHeight = readTimelineContentHeight(scroller);
-    if (
-      contentHeight - timelineStall.lastContentHeight >
-      TIMELINE_PAGE_GROWTH_PX
-    ) {
-      // 大幅增长＝新一页确实到了，重新开始计时。
-      timelineStall.lastContentHeight = contentHeight;
-      timelineStall.staleNudges = 0;
-      timelineStall.inViewSince = now;
-      return;
+  function updateNativeTimelinePaginationGuards(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const scrollers = new Set();
+    if (root instanceof Element) {
+      const ownScroller = root.matches('.vue-recycle-scroller')
+        ? root
+        : root.closest('.vue-recycle-scroller');
+      if (ownScroller) scrollers.add(ownScroller);
     }
-    if (contentHeight > timelineStall.lastContentHeight) {
-      // 图片撑开导致的小幅重测，只更新基准，不重置计时。
-      timelineStall.lastContentHeight = contentHeight;
-    }
+    root
+      .querySelectorAll('.vue-recycle-scroller')
+      .forEach((scroller) => scrollers.add(scroller));
 
-    if (!timelineStall.inViewSince) {
-      timelineStall.inViewSince = now;
-      return;
-    }
-    if (now - timelineStall.inViewSince < TIMELINE_STALL_IDLE_MS) return;
-    if (now - timelineStall.lastNudgeAt < TIMELINE_NUDGE_COOLDOWN_MS) return;
-    // 时间线真的到头时不再无限重试；用户滚离底部后自动恢复额度。
-    if (timelineStall.staleNudges >= TIMELINE_NUDGE_MAX_STALE) return;
+    scrollers.forEach((scroller) => {
+      const slot = scroller.querySelector(
+        ':scope > .vue-recycle-scroller__slot'
+      );
+      const loader = slot?.querySelector('.woo-spinner-main');
+      if (!slot || !loader) {
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR);
+        return;
+      }
 
-    timelineStall.staleNudges += 1;
-    timelineStall.lastNudgeAt = now;
-    nudgeNativeTimelineLoader(card);
+      const loaderRect = loader.getBoundingClientRect();
+      const viewport = Math.max(window.innerHeight || 0, 1);
+      const hiddenTailRow = Array.from(
+        scroller.querySelectorAll(BLOCKED_CONTENT_HIDE_SELECTOR)
+      ).some((shell) => {
+        const view = shell.parentElement?.matches(VIRTUAL_VIEW_SELECTOR)
+          ? shell.parentElement
+          : null;
+        if (!view) return false;
+        const viewRect = view.getBoundingClientRect();
+        return (
+          loaderRect.top - viewRect.bottom <=
+            viewport + NATIVE_PAGINATION_GUARD_PX &&
+          viewRect.top - loaderRect.bottom <= viewport
+        );
+      });
+      const loaderNearViewport =
+        loaderRect.bottom >= -NATIVE_PAGINATION_GUARD_PX &&
+        loaderRect.top <=
+          viewport + NATIVE_PAGINATION_GUARD_PX + 16;
+      if (hiddenTailRow && loaderNearViewport) {
+        scroller.setAttribute(NATIVE_PAGINATION_GUARD_ATTR, '1');
+      } else {
+        scroller.removeAttribute(NATIVE_PAGINATION_GUARD_ATTR);
+      }
+    });
   }
 
   function compactVirtualScrollerGaps(root = document) {
@@ -3770,11 +3628,12 @@
     }
     if (!root || !root.querySelectorAll) return;
     // DynamicScroller owns row coordinates and wrapper height. The plugin only
-    // watches for a stalled next-page sentinel while Vue remeasures marked
-    // content shells; it never rewrites row offsets or the wrapper height.
-    // The sentinel lookup is document-wide on purpose — see
-    // findPaginatingTimeline().
-    recoverStalledTimelinePagination();
+    // refreshes its pagination guard while Vue remeasures marked content shells.
+    const scanRoot =
+      root instanceof Element
+        ? root.closest('.vue-recycle-scroller') || root
+        : root;
+    updateNativeTimelinePaginationGuards(scanRoot);
   }
 
   function isWeiboSearchResultPage() {
@@ -3921,7 +3780,6 @@
         return;
       }
       pauseVideosIn(target);
-      markTimelineScrollerCollapsed(target);
       target.setAttribute(HIDDEN_AD_ATTR, '1');
       hiddenAny = true;
     });
@@ -4947,13 +4805,18 @@
     WB_INTERNAL.dom.schedule('blocked-page-ready-followup', run, 1200);
   }
 
-  let timelineStallCheckFrame = 0;
-  function checkTimelinePaginationOnScroll() {
-    if (timelineStallCheckFrame) return;
-    timelineStallCheckFrame = requestAnimationFrame(() => {
-      timelineStallCheckFrame = 0;
-      if (isRelationshipListPage()) return;
-      recoverStalledTimelinePagination();
+  let nativePaginationGuardRefreshFrame = 0;
+  function refreshNativePaginationGuardOnScroll() {
+    if (nativePaginationGuardRefreshFrame) return;
+    nativePaginationGuardRefreshFrame = requestAnimationFrame(() => {
+      nativePaginationGuardRefreshFrame = 0;
+      if (
+        isRelationshipListPage() ||
+        !document.querySelector(`[${NATIVE_PAGINATION_GUARD_ATTR}]`)
+      ) {
+        return;
+      }
+      updateNativeTimelinePaginationGuards(document);
     });
   }
 
@@ -5047,18 +4910,13 @@
     }
   })();
 
-  window.addEventListener('scroll', checkTimelinePaginationOnScroll, {
+  window.addEventListener('scroll', refreshNativePaginationGuardOnScroll, {
     passive: true,
   });
-  document.addEventListener('scroll', checkTimelinePaginationOnScroll, {
+  document.addEventListener('scroll', refreshNativePaginationGuardOnScroll, {
     passive: true,
     capture: true,
   });
-  // 滚到底后页面不再产生 scroll 事件，停滞检测必须有一个独立心跳来兜底。
-  setInterval(() => {
-    if (isRelationshipListPage()) return;
-    recoverStalledTimelinePagination();
-  }, TIMELINE_STALL_POLL_MS);
 
   initUserContextMenu();
   initSearchResultBlacklistFilter();
@@ -5958,14 +5816,22 @@
     );
   }
 
-  // 分栏查找与选中判定统一走 WB_INTERNAL.timelineTabs，避免这里和默认分栏
-  // 逻辑各留一份实现后再次分叉（微博只用哈希类名表示选中态，没有 aria）。
   function findTimelineTab(title) {
-    return WB_INTERNAL.timelineTabs.find(title);
+    const tab = document.querySelector(`[role="link"][title="${title}"]`);
+    return tab instanceof HTMLElement ? tab : null;
   }
 
   function isTimelineTabSelected(tab) {
-    return WB_INTERNAL.timelineTabs.isActive(tab);
+    if (!tab) return false;
+    if (
+      tab.getAttribute('aria-selected') === 'true' ||
+      tab.getAttribute('aria-current') === 'page'
+    ) {
+      return true;
+    }
+    return Array.from(tab.classList || []).some((className) =>
+      /(?:^|_)cur(?:_|$)|active|selected/i.test(className)
+    );
   }
 
   function openNativeHomeTimeline() {
