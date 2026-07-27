@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.2.0
+// @version      2.3.0
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -41,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.2.0';
+  const SCRIPT_VERSION = '2.3.0';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -1780,13 +1780,15 @@
       : '';
     const hideSearchHotBandCSS = hideHotSearch
       ? `
-          /* 隐藏微博搜索页热搜榜 */
+          /*
+           * 隐藏微博搜索页热搜榜。这里只允许命中热搜榜自身及包裹它的卡片。
+           * 搜索页右栏 #pl_right_side 正是热搜容器的直接父节点，因此任何按
+           * 直接子节点向上匹配父级 div 的写法都会连带隐藏整条右栏，把创作者
+           * 中心和帮助中心一起去掉；卡片级选择器必须保留 card 类名限定。
+           */
           #hot-band-container,
           .hot-band-container,
           .hot-band-tabs,
-          div:has(> .hot-band-tabs),
-          div:has(> #hot-band-container),
-          div:has(> .hot-band-container),
           .card-wrap:has(.hot-band-tabs),
           .card-wrap:has(.hot-band-container),
           [class*="card"]:has(> .hot-band-tabs),
@@ -1798,8 +1800,7 @@
       : '';
     const hideAllFollowingCSS = defaultLatestTimeline
       ? `
-          div[role="link"][title="全部关注"],
-          .Links_box_17T3k {
+          div[role="link"][title="全部关注"] {
             display: none !important;
           }
         `
@@ -1825,7 +1826,9 @@
         overflow: hidden !important;
       }
       .vue-recycle-scroller__item-view > ${BLOCKED_CONTENT_HIDE_SELECTOR},
-      [class*="vue-recycle-scroller__item-view"] > ${BLOCKED_CONTENT_HIDE_SELECTOR} {
+      [class*="vue-recycle-scroller__item-view"] > ${BLOCKED_CONTENT_HIDE_SELECTOR},
+      .vue-recycle-scroller__item-view > ${HIDDEN_AD_SELECTOR},
+      [class*="vue-recycle-scroller__item-view"] > ${HIDDEN_AD_SELECTOR} {
         /*
          * DynamicScroller ignores a measured size of exactly 0 and keeps the
          * previous cached row height, which leaves a large blank slot. Keep a
@@ -4627,12 +4630,43 @@
     return hiddenAny;
   }
 
+  function stillLooksLikeRecognizedAd(node) {
+    if (!(node instanceof Element)) return false;
+    return (
+      node.matches(EXPLICIT_AD_SELECTOR) ||
+      !!node.querySelector(EXPLICIT_AD_SELECTOR) ||
+      hasExplicitAdLabel(node)
+    );
+  }
+
+  function restoreRecycledVirtualAdShells(scope) {
+    const nodes = [];
+    if (scope instanceof Element && scope.matches(HIDDEN_AD_SELECTOR)) {
+      nodes.push(scope);
+    }
+    scope
+      .querySelectorAll(HIDDEN_AD_SELECTOR)
+      .forEach((node) => nodes.push(node));
+
+    Array.from(new Set(nodes)).forEach((node) => {
+      if (!(node instanceof Element) || !node.closest(VIRTUAL_VIEW_SELECTOR)) {
+        return;
+      }
+      // Vue 会把同一个壳复用给另一条微博。广告标记必须重新验证，否则回收后
+      // 的正常微博会继续沿用上一条广告的隐藏状态。
+      if (!stillLooksLikeRecognizedAd(node)) {
+        node.removeAttribute(HIDDEN_AD_ATTR);
+      }
+    });
+  }
+
   function restoreRecycledVirtualContentShells(root = document) {
     if (!root || !root.querySelectorAll) return;
     const scope =
       root instanceof Element
         ? root.closest(VIRTUAL_VIEW_SELECTOR) || root
         : root;
+    restoreRecycledVirtualAdShells(scope);
     const nodes = [];
     if (
       scope instanceof Element &&
@@ -5127,11 +5161,130 @@
   }
   const SEARCH_RELATED_USERS_HIDDEN_ATTR =
     'data-__wb_search_related_users_hidden';
-  const HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR =
-    'data-__wb_hot_search_sidebar_overflow_spacing';
-  const HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY =
-    '--wb-pynseq-sidebar-overflow-space';
-  let hotSearchSidebarOverflowSpacingActive = false;
+  const PANEL_HIDDEN_ATTR = 'data-__wb_hidden_by_userscript';
+  const SIDEBAR_LEAD_GAP_ATTR = 'data-__wb_sidebar_lead_gap';
+  let sidebarVisibilityDirty = false;
+
+  function markPanelHidden(panel) {
+    if (!(panel instanceof Element) || panel.hasAttribute(PANEL_HIDDEN_ATTR)) {
+      return false;
+    }
+    panel.setAttribute(PANEL_HIDDEN_ATTR, '1');
+    sidebarVisibilityDirty = true;
+    return true;
+  }
+
+  function unmarkPanelHidden(panel) {
+    if (!(panel instanceof Element) || !panel.hasAttribute(PANEL_HIDDEN_ATTR)) {
+      return false;
+    }
+    panel.removeAttribute(PANEL_HIDDEN_ATTR);
+    sidebarVisibilityDirty = true;
+    return true;
+  }
+
+  // 微博把侧栏首个模块渲染成没有上外边距的卡片，后续模块才带 8px 卡片间距。
+  // 脚本隐藏靠前的模块后，后一个模块的上外边距会沿首子链向上塌陷成整条轨道的
+  // 前导空白，首个可见模块因此比左侧主列低几个像素。这里只把这段确实塌陷出来
+  // 的外边距标记出来交给样式表清零，不写入内联样式，也不改动模块之间的原生
+  // 间距；首个模块本来就可见时保持微博原生结果。
+  function markSidebarLeadGap() {
+    let changed = false;
+    const previous = new Set(
+      document.querySelectorAll(`[${SIDEBAR_LEAD_GAP_ATTR}]`)
+    );
+    const next = new Set();
+
+    document.querySelectorAll('.wbpro-side-main').forEach((container) => {
+      const modules = Array.from(container.children);
+      const firstVisibleIndex = modules.findIndex(
+        (module) => module.getBoundingClientRect().height > 0
+      );
+      if (firstVisibleIndex <= 0) return;
+      const hiddenByUserscript = modules
+        .slice(0, firstVisibleIndex)
+        .some(
+          (module) =>
+            module.matches(`[${PANEL_HIDDEN_ATTR}]`) ||
+            !!module.querySelector(`[${PANEL_HIDDEN_ATTR}]`)
+        );
+      // 前面的模块不是脚本隐藏的，交给微博自己决定间距。
+      if (!hiddenByUserscript) return;
+
+      let cur = modules[firstVisibleIndex];
+      let depth = 0;
+      while (cur instanceof Element && depth < 6) {
+        const style = getComputedStyle(cur);
+        // 已标记的那一层此时算出来的上外边距就是被本脚本清零的结果，必须按
+        // 命中处理，否则每次扫描都会先撤销标记、下次再重新加上，来回抖动。
+        if (
+          cur.hasAttribute(SIDEBAR_LEAD_GAP_ATTR) ||
+          (Number.parseFloat(style.marginTop) || 0) > 0
+        ) {
+          next.add(cur);
+          return;
+        }
+        // 外边距无法再向上塌陷，更深处的间距属于模块内部，保持原生。
+        if (
+          (Number.parseFloat(style.borderTopWidth) || 0) > 0 ||
+          (Number.parseFloat(style.paddingTop) || 0) > 0
+        ) {
+          return;
+        }
+        cur = cur.firstElementChild;
+        depth++;
+      }
+    });
+
+    previous.forEach((el) => {
+      if (next.has(el)) return;
+      el.removeAttribute(SIDEBAR_LEAD_GAP_ATTR);
+      changed = true;
+    });
+    next.forEach((el) => {
+      if (el.hasAttribute(SIDEBAR_LEAD_GAP_ATTR)) return;
+      el.setAttribute(SIDEBAR_LEAD_GAP_ATTR, '1');
+      changed = true;
+    });
+    if (changed) sidebarVisibilityDirty = true;
+  }
+
+  // 微博右侧轨道的高度由微博自身的 MutationObserver 负责：该回调按
+  // `.hotBand` 的实际高度重新计算轨道容器高度和 `#__sidebar` 的 min-height，
+  // 而它只监听 childList / characterData，不监听属性变化。脚本用标记属性配合
+  // 样式表隐藏卡片不会产生 childList 变化，微博因此一直沿用隐藏时算出的旧
+  // 高度，恢复热搜后轨道被按旧高度吸附住。这里插入并立即移除一个不参与布局
+  // 的注释节点，制造一次真实的 childList 变化，把重排交回微博原生逻辑，脚本
+  // 自身不写入任何轨道定位或占位高度。
+  function nudgeNativeSidebarObserver() {
+    document
+      .querySelectorAll('.rightSide, [class*="_sideBox_"]')
+      .forEach((rail) => {
+        if (!rail.isConnected) return;
+        const marker = document.createComment('wb-pynseq-relayout');
+        rail.appendChild(marker);
+        marker.remove();
+      });
+  }
+
+  function requestNativeSidebarRelayout() {
+    WB_INTERNAL.dom.schedule(
+      'sidebar-native-relayout',
+      nudgeNativeSidebarObserver,
+      0
+    );
+    WB_INTERNAL.dom.schedule(
+      'sidebar-native-relayout-followup',
+      nudgeNativeSidebarObserver,
+      260
+    );
+  }
+
+  function flushSidebarVisibilityChanges() {
+    if (!sidebarVisibilityDirty) return;
+    sidebarVisibilityDirty = false;
+    requestNativeSidebarRelayout();
+  }
 
   function hideSearchRelatedUsersPanel(root = document) {
     if (
@@ -5148,7 +5301,7 @@
         .querySelectorAll(`[${SEARCH_RELATED_USERS_HIDDEN_ATTR}]`)
         .forEach((panel) => {
           panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
-          panel.removeAttribute('data-__wb_hidden_by_userscript');
+          unmarkPanelHidden(panel);
         });
       return;
     }
@@ -5175,7 +5328,7 @@
         return;
       }
       panel.setAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR, '1');
-      panel.setAttribute('data-__wb_hidden_by_userscript', '1');
+      markPanelHidden(panel);
     });
   }
 
@@ -5201,63 +5354,10 @@
     );
   }
 
-  function restoreHotSearchSidebarOverflowSpacing(rail) {
-    if (!(rail instanceof Element)) return;
-    rail.style.removeProperty(HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY);
-    rail.removeAttribute(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR);
-  }
-
-  function syncHotSearchSidebarLayout() {
-    const markedSelector = `[${HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR}]`;
-    const targetRailOverflow = new Map();
-
-    if (hotSearchSidebarOverflowSpacingActive && !CFG.hideHotSearch) {
-      document.querySelectorAll('.wbpro-side').forEach((side) => {
-        if (!normText(side.textContent).includes('微博热搜')) return;
-        const rail = side.closest('.rightSide, [class*="_sideBox_"]');
-        if (
-          !rail ||
-          rail === document.body ||
-          rail === document.documentElement
-        ) {
-          return;
-        }
-
-        let shell = side;
-        while (shell.parentElement && shell.parentElement !== rail) {
-          shell = shell.parentElement;
-        }
-        if (shell.parentElement !== rail) return;
-        const overflowHeight = Math.max(
-          0,
-          Math.ceil(shell.scrollHeight - shell.clientHeight)
-        );
-        if (overflowHeight <= 1) return;
-        targetRailOverflow.set(
-          rail,
-          Math.max(targetRailOverflow.get(rail) || 0, overflowHeight)
-        );
-      });
-    }
-
-    document.querySelectorAll(markedSelector).forEach((rail) => {
-      if (!targetRailOverflow.has(rail)) {
-        restoreHotSearchSidebarOverflowSpacing(rail);
-      }
-    });
-    targetRailOverflow.forEach((overflowHeight, rail) => {
-      rail.style.setProperty(
-        HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY,
-        `${overflowHeight}px`
-      );
-      rail.setAttribute(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR, '1');
-    });
-  }
-
   function promoteHiddenSidebarShells(root = document) {
     if (!root || !root.querySelectorAll) return;
     const hidden = [];
-    const selector = '[data-__wb_hidden_by_userscript]';
+    const selector = `[${PANEL_HIDDEN_ATTR}]`;
     if (root instanceof Element && root.matches(selector)) hidden.push(root);
     root.querySelectorAll(selector).forEach((panel) => hidden.push(panel));
 
@@ -5271,8 +5371,8 @@
       ) {
         return;
       }
-      panel.removeAttribute('data-__wb_hidden_by_userscript');
-      side.setAttribute('data-__wb_hidden_by_userscript', '1');
+      panel.removeAttribute(PANEL_HIDDEN_ATTR);
+      markPanelHidden(side);
     });
   }
   function hidePanels(root = document) {
@@ -5289,34 +5389,24 @@
       if (!text) return;
       for (const t of BLOCK_TITLES) {
         if (text.includes(normText(t))) {
-          const panel = findSectionRootFromHeading(h);
-          if (panel && !panel.hasAttribute('data-__wb_hidden_by_userscript')) {
-            panel.setAttribute('data-__wb_hidden_by_userscript', '1');
-          }
+          markPanelHidden(findSectionRootFromHeading(h));
           break;
         }
       }
     });
     hideSearchHotBand(root);
-    syncHotSearchSidebarLayout();
+    markSidebarLeadGap();
+    flushSidebarVisibilityChanges();
   }
 
   function restoreManagedPanels() {
-    document
-      .querySelectorAll('[data-__wb_hidden_by_userscript]')
-      .forEach((panel) => {
-        panel.removeAttribute('data-__wb_hidden_by_userscript');
-        panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
-      });
+    document.querySelectorAll(`[${PANEL_HIDDEN_ATTR}]`).forEach((panel) => {
+      unmarkPanelHidden(panel);
+      panel.removeAttribute(SEARCH_RELATED_USERS_HIDDEN_ATTR);
+    });
   }
 
-  function applyPanelSettingsNow(options = {}) {
-    if (options.restoredHotSearch) {
-      hotSearchSidebarOverflowSpacingActive = true;
-    }
-    if (CFG.hideHotSearch) {
-      hotSearchSidebarOverflowSpacingActive = false;
-    }
+  function applyPanelSettingsNow() {
     restoreManagedPanels();
     hidePanels(document);
     queuePanelRefresh(document, 80);
@@ -5344,11 +5434,7 @@
     const panels = [];
     if (root instanceof Element && root.matches(selector)) panels.push(root);
     root.querySelectorAll(selector).forEach((panel) => panels.push(panel));
-    panels.forEach((panel) => {
-      if (!panel.hasAttribute('data-__wb_hidden_by_userscript')) {
-        panel.setAttribute('data-__wb_hidden_by_userscript', '1');
-      }
-    });
+    panels.forEach((panel) => markPanelHidden(panel));
   }
   function hideSearchHotBand(root = document) {
     if (!CFG.hideHotSearch || !root || !root.querySelectorAll) return;
@@ -5369,17 +5455,13 @@
         side !== document.documentElement &&
         normText(side.textContent).includes('微博热搜')
       ) {
-        side.setAttribute('data-__wb_hidden_by_userscript', '1');
+        markPanelHidden(side);
         return;
       }
 
       const target = findSearchHotBandContainer(panel);
-      if (
-        target &&
-        target.isConnected &&
-        !target.hasAttribute('data-__wb_hidden_by_userscript')
-      ) {
-        target.setAttribute('data-__wb_hidden_by_userscript', '1');
+      if (target && target.isConnected) {
+        markPanelHidden(target);
       }
     });
   }
@@ -5450,12 +5532,8 @@
   function ensureStyles() {
     if (document.getElementById('wbset-style')) return;
     const css = `
-    [data-__wb_hidden_by_userscript="1"]{display:none!important}
-    [${HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR}="1"]::after{
-      content:"";display:block;width:1px;height:var(${HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY},0px);
-      min-height:var(${HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY},0px);flex-shrink:0;
-      visibility:hidden;pointer-events:none
-    }
+    [${PANEL_HIDDEN_ATTR}="1"]{display:none!important}
+    [${SIDEBAR_LEAD_GAP_ATTR}="1"]{margin-top:0!important}
     .wbset-btn{position:fixed;right:24px;bottom:24px;z-index:999999;width:46px;height:46px;display:grid;place-items:center;padding:0;border:1px solid rgba(0,0,0,.1);border-radius:50%;background:rgba(255,255,255,.94);color:#252525;cursor:pointer;box-shadow:0 8px 26px rgba(0,0,0,.18);backdrop-filter:blur(10px);transition:transform .18s ease,box-shadow .18s ease,background .18s ease;}
     .wbset-btn svg{width:21px;height:21px;display:block;transition:transform .22s ease}
     .wbset-btn:hover{background:#fff;transform:translateY(-2px);box-shadow:0 12px 32px rgba(0,0,0,.22)}
@@ -5855,17 +5933,13 @@
       const previousCfg = loadCfg();
       const previousLatestTimeline =
         previousCfg.defaultLatestTimeline !== false;
-      const previousHotSearchHidden = previousCfg.hideHotSearch === true;
       CFG = saveCfg(normalizeCfg(nextSettings));
       GM_setValue(ONBOARDING_DONE_KEY, true);
       overlay.remove();
       let runtimeApplyError = null;
       try {
         WB_INTERNAL.applyConfig?.(CFG);
-        applyPanelSettingsNow({
-          restoredHotSearch:
-            previousHotSearchHidden && CFG.hideHotSearch === false,
-        });
+        applyPanelSettingsNow();
         syncLauncherButton();
       } catch (error) {
         runtimeApplyError = error;
@@ -6734,7 +6808,6 @@
       panel.querySelector('#wbset-save').addEventListener('click', (event) => {
         if (!isTrustedSettingsEvent(event)) return;
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
-        const previousHotSearchHidden = CFG.hideHotSearch === true;
         const nextLatestTimeline = $latest.checked;
         CFG.hideHotSearch = $hot.checked;
         CFG.hideSuggestedPeople = $sug.checked;
@@ -6760,10 +6833,7 @@
         let runtimeApplyError = null;
         try {
           WB_INTERNAL.applyConfig?.(CFG);
-          applyPanelSettingsNow({
-            restoredHotSearch:
-              previousHotSearchHidden && CFG.hideHotSearch === false,
-          });
+          applyPanelSettingsNow();
           syncLauncherButton();
         } catch (error) {
           runtimeApplyError = error;
@@ -6853,13 +6923,9 @@
       (_name, _oldValue, _newValue, remote) => {
         if (!remote) return;
         const previousLatestTimeline = CFG.defaultLatestTimeline !== false;
-        const previousHotSearchHidden = CFG.hideHotSearch === true;
         CFG = loadCfg();
         WB_INTERNAL.applyConfig?.(CFG);
-        applyPanelSettingsNow({
-          restoredHotSearch:
-            previousHotSearchHidden && CFG.hideHotSearch === false,
-        });
+        applyPanelSettingsNow();
         syncLauncherButton();
         reconcileHomeTimelineSetting(
           previousLatestTimeline,

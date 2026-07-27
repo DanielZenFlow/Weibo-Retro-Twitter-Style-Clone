@@ -9,6 +9,10 @@ const scriptPath = path.join(
 );
 const source = fs.readFileSync(scriptPath, 'utf8');
 const readmeSource = fs.readFileSync(path.join(__dirname, 'readme.md'), 'utf8');
+const changelog = fs.readFileSync(
+  path.join(__dirname, 'CHANGELOG.zh-CN.md'),
+  'utf8'
+);
 const iconPath = path.join(__dirname, 'pynseq-for-weibo-icon.png');
 const iconSource = fs.readFileSync(iconPath);
 const immutableIconURL =
@@ -426,8 +430,21 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.2\.0/);
-assert.match(source, /const SCRIPT_VERSION = '2\.2\.0'/);
+assert.match(source, /@version\s+2\.3\.0/);
+assert.match(source, /const SCRIPT_VERSION = '2\.3\.0'/);
+// 元数据版本号与运行时常量必须始终一致，否则设置面板会显示错误版本。
+assert.equal(
+  source.match(/@version\s+(\S+)/)?.[1],
+  source.match(/const SCRIPT_VERSION = '([^']+)'/)?.[1],
+  'the userscript metadata version and SCRIPT_VERSION must stay in sync'
+);
+// 更新日志必须为当前版本留有条目。
+assert.ok(
+  changelog.includes(
+    `## v${source.match(/const SCRIPT_VERSION = '([^']+)'/)?.[1]} `
+  ),
+  'CHANGELOG must document the current version'
+);
 assert.match(source, /const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博'/);
 assert.match(settingsSource, /<span class="wbset-version">v\$\{SCRIPT_VERSION\}<\/span>/);
 assert.doesNotMatch(source, /本地黑名单/);
@@ -482,16 +499,9 @@ assert.match(
   onboardingFinishSource,
   /previousCfg\.defaultLatestTimeline !== false/
 );
-assert.match(
-  onboardingFinishSource,
-  /const previousHotSearchHidden = previousCfg\.hideHotSearch === true/
-);
 assert.match(onboardingFinishSource, /CFG = saveCfg\(normalizeCfg\(nextSettings\)\)/);
 assert.match(onboardingFinishSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
-assert.match(
-  onboardingFinishSource,
-  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:/
-);
+assert.match(onboardingFinishSource, /applyPanelSettingsNow\(\)/);
 assert.match(onboardingFinishSource, /syncLauncherButton\(\)/);
 assert.match(onboardingFinishSource, /reconcileHomeTimelineSetting\(/);
 assert.match(source, /if \(!isInsideCommentSurface\(el\)\) return null/);
@@ -1028,21 +1038,20 @@ const saveHandlerSource = sourceBetween(
 );
 assert.doesNotMatch(saveHandlerSource, /location\.reload\s*\(/);
 assert.match(saveHandlerSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
-assert.match(
-  saveHandlerSource,
-  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:/
-);
+assert.match(saveHandlerSource, /applyPanelSettingsNow\(\)/);
 assert.match(saveHandlerSource, /syncLauncherButton\(\)/);
 assert.match(saveHandlerSource, /closePanel\(\{ reset: false \}\)/);
 assert.match(saveHandlerSource, /reconcileHomeTimelineSetting\(/);
 assert.equal((source.match(/location\.reload\s*\(/g) || []).length, 1);
-assert.match(
+// 侧栏恢复必须完全交回微博原生布局：脚本不得再保留任何自有的轨道占位、
+// sticky top 覆盖或热搜专用的恢复状态开关。
+assert.doesNotMatch(
   source,
-  /const HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR\s*=\s*[\s\S]*?'data-__wb_hot_search_sidebar_overflow_spacing'/
+  /HOT_SEARCH_SIDEBAR_RESTORE_SPACING_ATTR|HOT_SEARCH_SIDEBAR_AUTO_HEIGHT_ATTR|data-__wb_hot_search_sidebar_(?:restore_spacing|native_bottom_gap|auto_height)/
 );
 assert.doesNotMatch(
   source,
-  /HOT_SEARCH_SIDEBAR_AUTO_HEIGHT_ATTR|data-__wb_hot_search_sidebar_auto_height/
+  /--wb-pynseq-sidebar-restore-space|--wb-pynseq-sidebar-sticky-top|hotSearchSidebarRestoreSpacingActive|restoredHotSearch/
 );
 assert.doesNotMatch(
   source,
@@ -1068,89 +1077,115 @@ assert.doesNotMatch(
   sourceBetween('  function ensureStyles() {', '  function githubIconMarkup() {'),
   /height:\s*auto\s*!important/
 );
-assert.match(
+// 侧栏隐藏/恢复只保留标记属性配合样式表，样式里不得再出现脚本自造的占位。
+assert.doesNotMatch(
   sourceBetween('  function ensureStyles() {', '  function githubIconMarkup() {'),
-  /HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR[\s\S]*?::after/
+  /\.wbpro-side-copy::before|--wb-pynseq-sidebar/
 );
-const restoreHotSearchSidebarLayoutSource = sourceBetween(
-  '  function restoreHotSearchSidebarOverflowSpacing(rail) {',
-  '  function syncHotSearchSidebarLayout() {'
+
+// 微博右侧轨道由微博自身的 MutationObserver（childList/characterData/subtree）
+// 重新计算高度，属性变化不会触发它。脚本改变卡片可见性后必须制造一次真实的
+// childList 变化，把重排交回原生逻辑，而不是自行改写 top / 占位高度。
+const sidebarVisibilitySource = sourceBetween(
+  '  function markPanelHidden(panel) {',
+  '  function hideSearchRelatedUsersPanel('
+);
+assert.match(sidebarVisibilitySource, /sidebarVisibilityDirty = true/);
+assert.match(
+  sidebarVisibilitySource,
+  /function nudgeNativeSidebarObserver\(\)[\s\S]*?document\.createComment\('wb-pynseq-relayout'\)/
 );
 assert.match(
-  restoreHotSearchSidebarLayoutSource,
-  /rail\.style\.removeProperty\(HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY\)/
+  sidebarVisibilitySource,
+  /rail\.appendChild\(marker\);\s*\n\s*marker\.remove\(\);/
 );
 assert.match(
-  restoreHotSearchSidebarLayoutSource,
-  /rail\.removeAttribute\(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR\)/
-);
-const hotSearchSidebarLayoutSource = sourceBetween(
-  '  function syncHotSearchSidebarLayout() {',
-  '  function promoteHiddenSidebarShells('
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /const targetRailOverflow = new Map\(\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /if \(hotSearchSidebarOverflowSpacingActive && !CFG\.hideHotSearch\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /side\.closest\('\.rightSide, \[class\*="_sideBox_"\]'\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /while \(shell\.parentElement && shell\.parentElement !== rail\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /if \(shell\.parentElement !== rail\) return;/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /document\.querySelectorAll\(markedSelector\)[\s\S]*?!targetRailOverflow\.has\(rail\)[\s\S]*?restoreHotSearchSidebarOverflowSpacing\(rail\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /Math\.ceil\(shell\.scrollHeight - shell\.clientHeight\)/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /rail\.style\.setProperty\([\s\S]*?HOT_SEARCH_SIDEBAR_OVERFLOW_PROPERTY,[\s\S]*?`\$\{overflowHeight\}px`/
-);
-assert.match(
-  hotSearchSidebarLayoutSource,
-  /rail\.setAttribute\(HOT_SEARCH_SIDEBAR_OVERFLOW_SPACING_ATTR, '1'\)/
+  sidebarVisibilitySource,
+  /function flushSidebarVisibilityChanges\(\)[\s\S]*?if \(!sidebarVisibilityDirty\) return;[\s\S]*?requestNativeSidebarRelayout\(\)/
 );
 assert.doesNotMatch(
-  hotSearchSidebarLayoutSource,
-  /shell\.style\.(?:height|minHeight|maxHeight)|height:\s*auto/
+  sidebarVisibilitySource,
+  /dispatchEvent|\.style\.(?:setProperty|removeProperty|top|height)/
 );
 assert.match(
   sourceBetween('  function hidePanels(', '  function restoreManagedPanels()'),
-  /hideSearchHotBand\(root\);[\s\S]*?syncHotSearchSidebarLayout\(\);/
+  /hideSearchHotBand\(root\);\s*\n\s*markSidebarLeadGap\(\);\s*\n\s*flushSidebarVisibilityChanges\(\);/
 );
+
+// 微博把侧栏首个模块渲染成没有上外边距的卡片。脚本隐藏靠前的模块后，后一个
+// 模块的上外边距会向上塌陷成整条轨道的前导空白，首个可见模块比左侧主列低
+// 几个像素。只在确实由脚本隐藏时清零那一段塌陷出来的外边距。
+const leadGapSource = sourceBetween(
+  '  function markSidebarLeadGap() {',
+  '  // 微博右侧轨道的高度由微博自身的 MutationObserver 负责'
+);
+assert.match(leadGapSource, /querySelectorAll\('\.wbpro-side-main'\)/);
+assert.match(leadGapSource, /if \(firstVisibleIndex <= 0\) return;/);
+assert.match(leadGapSource, /if \(!hiddenByUserscript\) return;/);
+assert.match(
+  leadGapSource,
+  /borderTopWidth[\s\S]*?paddingTop[\s\S]*?\)\s*\{\s*\n\s*return;/,
+  'must stop walking once the margin can no longer collapse upward'
+);
+assert.match(leadGapSource, /cur = cur\.firstElementChild;/);
+assert.match(leadGapSource, /setAttribute\(SIDEBAR_LEAD_GAP_ATTR, '1'\)/);
+assert.match(leadGapSource, /removeAttribute\(SIDEBAR_LEAD_GAP_ATTR\)/);
+assert.doesNotMatch(leadGapSource, /\.style\./);
+assert.match(
+  sourceBetween('  function ensureStyles() {', '  function githubIconMarkup() {'),
+  /\[\$\{SIDEBAR_LEAD_GAP_ATTR\}="1"\]\{margin-top:0!important\}/
+);
+
+// 搜索页右栏 #pl_right_side 是 #hot-band-container 的直接父节点，父级选择器
+// 会连带隐藏创作者中心和帮助中心整条右栏。
+const runtimeCSSRules = sourceBetween(
+  '  function generateCSSRules() {',
+  '  function injectCSSWhenReady('
+);
+assert.doesNotMatch(runtimeCSSRules, /div:has\(>\s*[.#]hot-band/);
+// 微博构建产物里的哈希类名会随版本变化，不得写死。
+assert.doesNotMatch(runtimeCSSRules, /Links_box_[A-Za-z0-9]+/);
+assert.match(runtimeCSSRules, /div\[role="link"\]\[title="全部关注"\]/);
 const applyPanelSettingsSource = sourceBetween(
-  '  function applyPanelSettingsNow(options = {}) {',
+  '  function applyPanelSettingsNow() {',
   '  function queuePanelRefresh('
 );
 assert.match(
   applyPanelSettingsSource,
-  /if \(options\.restoredHotSearch\)[\s\S]*?hotSearchSidebarOverflowSpacingActive = true/
+  /restoreManagedPanels\(\);[\s\S]*?hidePanels\(document\);/
+);
+// 恢复与隐藏都必须经过带脏标记的统一入口，避免漏掉原生重排通知。
+assert.match(
+  sourceBetween('  function restoreManagedPanels()', '  function applyPanelSettingsNow'),
+  /unmarkPanelHidden\(panel\)/
+);
+
+// 虚拟列表里的广告必须与被屏蔽微博使用同一套 1px 测量壳，否则 DynamicScroller
+// 会忽略 0 高度并沿用旧行高，留下大片空白。
+const runtimeCSSSource = sourceBetween(
+  '  function generateCSSRules() {',
+  '  function injectCSSWhenReady('
 );
 assert.match(
-  applyPanelSettingsSource,
-  /if \(CFG\.hideHotSearch\)[\s\S]*?hotSearchSidebarOverflowSpacingActive = false/
+  runtimeCSSSource,
+  /vue-recycle-scroller__item-view"\] > \$\{HIDDEN_AD_SELECTOR\}/
+);
+// 回收壳上的广告标记必须重新验证，否则复用后的正常微博会继续被隐藏。
+const recycledAdSource = sourceBetween(
+  '  function restoreRecycledVirtualAdShells(scope) {',
+  '  function restoreRecycledVirtualContentShells('
+);
+assert.match(recycledAdSource, /node\.closest\(VIRTUAL_VIEW_SELECTOR\)/);
+assert.match(
+  recycledAdSource,
+  /if \(!stillLooksLikeRecognizedAd\(node\)\)[\s\S]*?node\.removeAttribute\(HIDDEN_AD_ATTR\)/
 );
 assert.match(
-  saveHandlerSource,
-  /const previousHotSearchHidden = CFG\.hideHotSearch === true/
-);
-assert.match(
-  saveHandlerSource,
-  /applyPanelSettingsNow\(\{[\s\S]*?restoredHotSearch:\s*previousHotSearchHidden && CFG\.hideHotSearch === false/
+  sourceBetween(
+    '  function restoreRecycledVirtualContentShells(',
+    '  function hideBlockedDOMPosts('
+  ),
+  /restoreRecycledVirtualAdShells\(scope\);/
 );
 const nativeHomeSource = sourceBetween(
   '  function openNativeHomeTimeline() {',
@@ -1235,7 +1270,8 @@ const hotBandSource = sourceBetween(
   '  if (document.readyState ==='
 );
 assert.doesNotMatch(hotBandSource, /target\.remove\s*\(/);
-assert.match(hotBandSource, /data-__wb_hidden_by_userscript/);
+assert.match(hotBandSource, /markPanelHidden\((?:side|target)\)/);
+assert.match(source, /const PANEL_HIDDEN_ATTR = 'data-__wb_hidden_by_userscript'/);
 
 const context = vm.createContext({
   AbortController,
