@@ -430,8 +430,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.3\.1/);
-assert.match(source, /const SCRIPT_VERSION = '2\.3\.1'/);
+assert.match(source, /@version\s+2\.3\.2/);
+assert.match(source, /const SCRIPT_VERSION = '2\.3\.2'/);
 // 元数据版本号与运行时常量必须始终一致，否则设置面板会显示错误版本。
 assert.equal(
   source.match(/@version\s+(\S+)/)?.[1],
@@ -708,11 +708,11 @@ assert.match(
   timelineStallSource,
   /document\.visibilityState !== 'visible'/
 );
-// 只在脚本确实折叠过内容时才补偿，避免干预未被影响的原生分页。
-assert.match(
-  timelineStallSource,
-  /hasAttribute\(TIMELINE_COLLAPSED_ANY_ATTR\)/
-);
+// 补偿不得以"脚本折叠过内容"为前提。实测中整屏没有任何被屏蔽微博时，微博
+// 自身的哨兵同样会锁死、停在底部逾一分钟不再续页；以此设闸会在最常见的卡死
+// 场景下把补偿完全挡掉。
+assert.doesNotMatch(timelineStallSource, /TIMELINE_COLLAPSED_ANY_ATTR/);
+assert.doesNotMatch(source, /markTimelineScrollerCollapsed/);
 assert.match(
   timelineStallSource,
   /timelineStall\.staleNudges >= TIMELINE_NUDGE_MAX_STALE/
@@ -742,12 +742,22 @@ assert.match(
   virtualGapSource,
   /recoverStalledTimelinePagination\(\)/
 );
-// 哨兵查不到时必须整拍跳过：既不清静止计时，也不换容器。任何"查不到就重置"
-// 的写法都是拿噪声信号复位计时器，400ms 心跳叠加滚动回调会让计时永远走不满。
+// 底部卡片查不到时必须整拍跳过：既不清静止计时，也不换容器。任何"查不到就
+// 重置"的写法都是拿噪声信号复位计时器，心跳叠加滚动回调会让计时永远走不满。
 assert.match(
   timelineStallSource,
-  /const card = findNativeTimelineLoaderCard\(scroller\);\s*if \(!card\) return;/
+  /const slotState = classifyNativeTimelineSlotCard\(scroller\);\s*if \(!slotState\) return;/
 );
+// 失败卡片没有加载动画节点，只按动画节点检测会完全失明，必须单独识别。
+assert.match(timelineStallSource, /TIMELINE_ACTION_TEXT_RE\.test\(text\)/);
+assert.match(timelineStallSource, /TIMELINE_END_TEXT_RE\.test\(text\)/);
+// 补偿不得改写 fetch / XMLHttpRequest，只允许只读地观察资源计时。
+assert.doesNotMatch(timelineStallSource, /window\.fetch\s*=/);
+assert.doesNotMatch(
+  timelineStallSource,
+  /XMLHttpRequest\.prototype\.(?:open|send)\s*=/
+);
+assert.match(timelineStallSource, /new PerformanceObserver\(/);
 assert.doesNotMatch(timelineStallSource, /findPaginatingTimeline/);
 
 // 行为验证：哨兵在后置槽里，findNativeTimelineLoaderCard 必须找得到，
@@ -830,19 +840,23 @@ assert.equal(loaderLookupContext.findLoaderCard(null), null);
 function runTimelineStallScenario({
   sentinelTop = 670,
   visibilityState = 'visible',
-  collapsed = true,
+
   pageGrowthPx = 0,
   ticks = 60,
   // Vue 在续页前后会重建后置槽，哨兵会间歇性查不到。设为 N 表示每 N 拍
   // 有一拍找不到哨兵。
   sentinelMissingEvery = 0,
+  // 后置槽卡片的原生状态：加载动画 / 失败重试 / 没有更多。
+  slotKind = 'loading',
+  // 第几次点击重试后恢复为加载状态。
+  retryRecoversAfter = Infinity,
 } = {}) {
   let tick = 0;
   const sentinelPresent = () =>
     !sentinelMissingEvery || tick % sentinelMissingEvery !== 0;
   const stallSource =
     sourceBetween(
-      '  const TIMELINE_COLLAPSED_ANY_ATTR =',
+      '  const TIMELINE_LOADER_NUDGE_ATTR =',
       '  const VIRTUAL_VIEW_SELECTOR ='
     ) +
     sourceBetween(
@@ -851,7 +865,10 @@ function runTimelineStallScenario({
     );
 
   let contentHeight = 7502;
+  let kind = slotKind;
+  let clock = 1_000_000;
   const nudges = [];
+  const retryClicks = [];
   class StallElement {}
   const spinner = new StallElement();
   spinner.className = 'woo-spinner-main';
@@ -863,20 +880,43 @@ function runTimelineStallScenario({
   });
   card.setAttribute = () => {};
   card.removeAttribute = () => {};
+  // 微博的失败卡片文案为「内容加载失败，请点击重试」，到头为「没有更多」。
+  Object.defineProperty(card, 'textContent', {
+    get() {
+      if (kind === 'action') return '内容加载失败，请点击重试';
+      if (kind === 'end') return '没有更多内容了';
+      return '';
+    },
+  });
+  const retryTarget = new StallElement();
+  retryTarget.className = '_nextPage_13iyx_16';
+  retryTarget.click = () => {
+    retryClicks.push(clock - 1_000_000);
+    contentHeight += pageGrowthPx;
+    if (retryClicks.length >= retryRecoversAfter) kind = 'loading';
+  };
+  card.click = retryTarget.click;
+  card.querySelector = () => retryTarget;
   spinner.parentElement = card;
-  const makeStallSlot = (kids) => {
+  const makeStallSlot = (hasCard) => {
     const slot = new StallElement();
     slot.className = 'vue-recycle-scroller__slot';
     slot.querySelector = (sel) =>
-      sel === '.woo-spinner-main' && kids.length && sentinelPresent()
+      sel === '.woo-spinner-main' &&
+      hasCard &&
+      kind === 'loading' &&
+      sentinelPresent()
         ? spinner
         : null;
-    kids.forEach((kid) => {
-      kid.parentElement = slot;
+    Object.defineProperty(slot, 'firstElementChild', {
+      get() {
+        return hasCard ? card : null;
+      },
     });
+    if (hasCard) card.parentElement = slot;
     return slot;
   };
-  const slots = [makeStallSlot([]), makeStallSlot([card])];
+  const slots = [makeStallSlot(false), makeStallSlot(true)];
   const wrapper = {
     style: {
       get minHeight() {
@@ -889,7 +929,7 @@ function runTimelineStallScenario({
   scroller.className = 'vue-recycle-scroller';
   scroller.matches = (sel) => sel === '.vue-recycle-scroller';
   scroller.closest = () => scroller;
-  scroller.hasAttribute = () => collapsed;
+  scroller.hasAttribute = () => false;
   scroller.querySelectorAll = (sel) => (sel.includes('__slot') ? slots : []);
   scroller.querySelector = (sel) =>
     sel.includes('item-wrapper') ? wrapper : null;
@@ -902,6 +942,7 @@ function runTimelineStallScenario({
     'isRelationshipListPage',
     'requestAnimationFrame',
     'setTimeout',
+    'PerformanceObserver',
     'onNudge',
     `${stallSource}
      nudgeNativeTimelineLoader = onNudge;
@@ -914,6 +955,7 @@ function runTimelineStallScenario({
     () => false,
     (fn) => fn,
     (fn) => fn,
+    undefined,
     () => {
       nudges.push(contentHeight);
       contentHeight += pageGrowthPx;
@@ -921,47 +963,115 @@ function runTimelineStallScenario({
   );
 
   const realNow = Date.now;
-  let clock = 1_000_000;
   Date.now = () => clock;
   try {
     for (let i = 0; i < ticks; i += 1) {
       tick = i;
       instance.recover();
-      clock += 400;
+      // 与脚本里的停滞检测心跳保持一致。
+      clock += 250;
     }
   } finally {
     Date.now = realNow;
   }
-  return nudges.length;
+  return { nudges: nudges.length, retryClicks: retryClicks.length };
 }
 
 // 卡死现场：补偿必须触发，且在时间线真的到头时收敛到上限。
 assert.equal(
-  runTimelineStallScenario({ pageGrowthPx: 0 }),
+  runTimelineStallScenario({ pageGrowthPx: 0 }).nudges,
   3,
   'a stalled timeline must be nudged, then give up after the retry cap'
 );
 // 每次补偿都换来新的一页时，必须能一直翻下去，而不是三次之后就永久停摆。
 assert.ok(
-  runTimelineStallScenario({ pageGrowthPx: 900 }) > 3,
+  runTimelineStallScenario({ pageGrowthPx: 900 }).nudges > 3,
   'pagination must keep going while each nudge actually loads a page'
 );
+// 整页大部分被屏蔽时，列表总高可能只涨几十像素。这仍是一次成功的续页，
+// 必须能继续往下翻；若按"必须大幅增长才算成功"判定，失败计数会迅速触顶，
+// 表现为拉到底后时不时彻底不再加载。
+assert.ok(
+  runTimelineStallScenario({ pageGrowthPx: 60, ticks: 96 }).nudges > 3,
+  'pages that are mostly collapsed still count as successful loads'
+);
 // 哨兵被顶出视口 = 原生分页正常，不能插手。
-assert.equal(runTimelineStallScenario({ sentinelTop: 4000 }), 0);
+assert.equal(runTimelineStallScenario({ sentinelTop: 4000 }).nudges, 0);
 // 后台标签页不渲染，翻转不会被投递，必须完全不动。
-assert.equal(runTimelineStallScenario({ visibilityState: 'hidden' }), 0);
-// 没折叠过任何内容就不是脚本造成的，交给微博原生行为。
-assert.equal(runTimelineStallScenario({ collapsed: false }), 0);
+assert.equal(runTimelineStallScenario({ visibilityState: 'hidden' }).nudges, 0);
 // 哨兵间歇性查不到（Vue 重建后置槽）时补偿仍须触发：若在这一拍复位计时或
 // 更换跟踪容器，静止判定将无法走满，补偿不再执行。
 assert.ok(
-  runTimelineStallScenario({ sentinelMissingEvery: 3, pageGrowthPx: 900 }) > 3,
+  runTimelineStallScenario({ sentinelMissingEvery: 3, pageGrowthPx: 900 })
+    .nudges > 3,
   'a sentinel that briefly disappears must not reset the stall timer'
 );
 assert.ok(
-  runTimelineStallScenario({ sentinelMissingEvery: 2 }) > 0,
+  runTimelineStallScenario({ sentinelMissingEvery: 2 }).nudges > 0,
   'pagination recovery must survive an intermittently missing sentinel'
 );
+
+// 底部卡片是「内容加载失败，请点击重试」时不存在加载动画节点，只按动画节点
+// 检测会完全失明。必须识别失败卡片并触发其原生重试入口，恢复后继续续页。
+const retryRecovered = runTimelineStallScenario({
+  slotKind: 'action',
+  pageGrowthPx: 900,
+  retryRecoversAfter: 1,
+});
+assert.ok(
+  retryRecovered.retryClicks >= 1,
+  'a failed bottom card must be retried through its own native control'
+);
+assert.ok(
+  retryRecovered.nudges > 0,
+  'pagination must resume after the failed card recovers'
+);
+// 持续失败时重试次数必须有上限，不能无限点击。
+const retryHopeless = runTimelineStallScenario({
+  slotKind: 'action',
+  pageGrowthPx: 0,
+  ticks: 160,
+});
+assert.ok(
+  retryHopeless.retryClicks > 0 && retryHopeless.retryClicks <= 4,
+  'retrying a permanently failing card must be bounded'
+);
+// 「没有更多」是原生的终止状态，既不补偿也不点击。
+const endOfFeed = runTimelineStallScenario({ slotKind: 'end', ticks: 160 });
+assert.equal(endOfFeed.nudges, 0);
+assert.equal(endOfFeed.retryClicks, 0);
+
+// 底部卡片文案的判定必须覆盖微博前端包中实际存在的原生文案。这些字符串取自
+// 微博自身的构建产物，任一漏判都会让检测在对应状态下完全失明。
+const slotTextClassifier = vm.createContext({});
+vm.runInContext(
+  `${sourceBetween(
+    '  const TIMELINE_ACTION_TEXT_RE =',
+    '  const TIMELINE_RETRY_BASE_MS ='
+  )}
+   globalThis.classifySlotText = (text) => {
+     if (TIMELINE_END_TEXT_RE.test(text)) return 'end';
+     if (TIMELINE_ACTION_TEXT_RE.test(text)) return 'action';
+     return null;
+   };`,
+  slotTextClassifier
+);
+[
+  ['内容加载失败，请点击重试', 'action'],
+  ['点击重试', 'action'],
+  ['点击加载更多', 'action'],
+  ['没有更多内容了', 'end'],
+].forEach(([text, expected]) => {
+  assert.equal(
+    slotTextClassifier.classifySlotText(text),
+    expected,
+    `native bottom-card text must be classified: ${text}`
+  );
+});
+// 不属于任何一类的文案必须整拍跳过，绝不猜测。
+['', '正在加载', '推荐阅读', '展开'].forEach((text) => {
+  assert.equal(slotTextClassifier.classifySlotText(text), null);
+});
 // 关系列表页要还原成原生形态，遗留的哨兵隐藏标记必须一并清掉，
 // 否则哨兵会被永久隐藏。
 assert.match(

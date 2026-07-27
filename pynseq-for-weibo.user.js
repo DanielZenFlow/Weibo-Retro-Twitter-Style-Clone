@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.3.1
+// @version      2.3.2
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -41,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.3.1';
+  const SCRIPT_VERSION = '2.3.2';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -1096,15 +1096,30 @@
   // 触发条件必须避开 document.scrollHeight：微博的图片、视频和侧栏会持续改变
   // 它，任何"高度还在变就算正常"的判断都会被这些噪声一直清零，永远等不到停滞。
   // 改用 DynamicScroller 自己维护的列表总高，并且只把大幅增长视为"新一页到了"。
-  const TIMELINE_COLLAPSED_ANY_ATTR = 'data-__wb_timeline_collapsed';
   const TIMELINE_LOADER_NUDGE_ATTR = 'data-__wb_timeline_loader_nudge';
-  const TIMELINE_SENTINEL_MARGIN_PX = 300;
+  // 与微博自身的 rootMargin 保持一致：微博在哨兵进入视口下方 1500px 时就开始
+  // 预取，若只在哨兵快进视口时才补偿，用户会先看到空转的加载动画再等到内容。
+  const TIMELINE_SENTINEL_MARGIN_PX = 1500;
+  // 仅用于判断"是否需要重新等待页面稳定"，不用于判断续页是否成功。
   const TIMELINE_PAGE_GROWTH_PX = 400;
+  // 静止判定不能短于内容请求的常见耗时（实测 TTFB 约 1 秒），否则会在原生
+  // 请求仍在途时再触发一次续页。感知延迟由 1500px 提前量保证，不靠压缩这里。
   const TIMELINE_STALL_IDLE_MS = 1200;
   const TIMELINE_NUDGE_COOLDOWN_MS = 1200;
   const TIMELINE_NUDGE_MAX_STALE = 3;
+  // 补偿触发后等待对应的内容请求出结果或超时，期间不再叠加触发。
+  const TIMELINE_ACTION_PENDING_MS = 6000;
+  const TIMELINE_REQUEST_SETTLE_MS = 400;
+  const TIMELINE_REQUEST_URL_RE = /\/ajax\/[a-z]+\/[a-z_]*timeline/i;
+  // 底部卡片的原生状态，文案取自微博自身的前端包：加载动画之外，请求失败是
+  // 「内容加载失败，请点击重试」，需要用户确认续页是「点击加载更多」，时间线
+  // 到头是「没有更多内容了」。前两种都自带可点击的原生控件，直接触发即可。
+  const TIMELINE_ACTION_TEXT_RE = /加载失败|点击重试|点击加载更多|加载更多/;
+  const TIMELINE_END_TEXT_RE = /没有更多|已显示全部|已加载全部|到底了|到底啦/;
+  const TIMELINE_RETRY_BASE_MS = 400;
+  const TIMELINE_RETRY_MAX_CLICKS = 4;
   const TIMELINE_NUDGE_RESTORE_MS = 300;
-  const TIMELINE_STALL_POLL_MS = 400;
+  const TIMELINE_STALL_POLL_MS = 250;
   const VIRTUAL_VIEW_SELECTOR = [
     '.vue-recycle-scroller__item-view',
     '[class*="vue-recycle-scroller__item-view"]',
@@ -3390,7 +3405,6 @@
     }
     rememberBlockedContentVideos(target);
     pauseVideosIn(target);
-    markTimelineScrollerCollapsed(target);
     target.setAttribute(
       BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR,
       target.hasAttribute('aria-hidden')
@@ -3631,10 +3645,51 @@
     return null;
   }
 
-  function markTimelineScrollerCollapsed(target) {
-    if (!(target instanceof Element)) return;
-    const scroller = target.closest('.vue-recycle-scroller');
-    if (scroller) scroller.setAttribute(TIMELINE_COLLAPSED_ANY_ATTR, '1');
+  // 识别后置槽卡片的原生状态：加载动画走可见性翻转补偿；失败重试和「点击加载
+  // 更多」都带可点击的原生控件，直接触发；「没有更多」占位不做任何处理。文本
+  // 不匹配任何一类时整拍跳过，绝不猜测。
+  function classifyNativeTimelineSlotCard(scroller) {
+    const loader = findNativeTimelineLoaderCard(scroller);
+    if (loader) return { card: loader, kind: 'loading' };
+    if (!(scroller instanceof Element)) return null;
+    const slots = scroller.querySelectorAll(
+      ':scope > .vue-recycle-scroller__slot'
+    );
+    for (const slot of slots) {
+      const card = slot.firstElementChild;
+      if (!card) continue;
+      const text = String(card.textContent || '').trim();
+      if (!text) continue;
+      // 「没有更多」优先判定：终止文案里也可能带"更多"二字，先排除掉。
+      if (TIMELINE_END_TEXT_RE.test(text)) return { card, kind: 'end' };
+      if (TIMELINE_ACTION_TEXT_RE.test(text)) return { card, kind: 'action' };
+    }
+    return null;
+  }
+
+  // 只读的资源计时观察器，用来得知"最近一次时间线内容请求何时出的结果"。
+  // 不改写 fetch / XMLHttpRequest，也不读取响应内容。
+  let timelineRequestObserver = null;
+  let timelineRequestLastDoneAt = 0;
+  function ensureTimelineRequestObserver() {
+    if (
+      timelineRequestObserver ||
+      typeof PerformanceObserver !== 'function'
+    ) {
+      return;
+    }
+    try {
+      timelineRequestObserver = new PerformanceObserver((entries) => {
+        entries.getEntries().forEach((entry) => {
+          if (TIMELINE_REQUEST_URL_RE.test(String(entry.name || ''))) {
+            timelineRequestLastDoneAt = Date.now();
+          }
+        });
+      });
+      timelineRequestObserver.observe({ entryTypes: ['resource'] });
+    } catch (error) {
+      timelineRequestObserver = null;
+    }
   }
 
   // DynamicScroller 把列表总高写在 item-wrapper 的 min-height 上，这个数字只随
@@ -3657,6 +3712,9 @@
     staleNudges: 0,
     lastContentHeight: 0,
     nudging: false,
+    pendingSince: 0,
+    retryClicks: 0,
+    lastRetryAt: 0,
   };
 
   function resetTimelineStallState(scroller) {
@@ -3664,6 +3722,9 @@
     timelineStall.inViewSince = 0;
     timelineStall.lastNudgeAt = 0;
     timelineStall.staleNudges = 0;
+    timelineStall.pendingSince = 0;
+    timelineStall.retryClicks = 0;
+    timelineStall.lastRetryAt = 0;
     timelineStall.lastContentHeight = scroller
       ? readTimelineContentHeight(scroller)
       : 0;
@@ -3712,13 +3773,22 @@
       return;
     }
 
-    // 只补偿脚本自己造成的高度缩水；没折叠过任何内容就不去碰原生行为。
-    if (!scroller.hasAttribute(TIMELINE_COLLAPSED_ANY_ATTR)) return;
-    // Vue 在续页前后会重建后置槽，哨兵会短暂查不到。这一拍直接跳过即可：既不
-    // 清静止计时，也不换容器。任何"查不到就重置"的写法都是噪声信号复位计时器，
-    // 400ms 心跳叠加滚动回调会让计时永远走不满、补偿再也不执行。
-    const card = findNativeTimelineLoaderCard(scroller);
-    if (!card) return;
+    // 不再要求"脚本折叠过内容"才补偿。实测表明：即使整屏没有任何被屏蔽的
+    // 微博，微博自身的加载哨兵也会因为可见性一直为真而锁死（rootMargin
+    // 1500px，仅在翻转时回调），停在底部逾一分钟不再发出续页请求。脚本的
+    // 折叠只是让这种情况更容易发生，并非必要条件；按"只修自己造成的问题"
+    // 设闸反而会在最常见的卡死场景下把补偿完全挡掉。
+    // Vue 在续页前后会重建后置槽，底部卡片会短暂查不到。这一拍直接跳过即可：
+    // 既不清静止计时，也不换容器——任何"查不到就重置"的写法都是拿噪声信号
+    // 复位计时器，心跳叠加滚动回调会让计时永远走不满、补偿再也不执行。
+    const slotState = classifyNativeTimelineSlotCard(scroller);
+    if (!slotState) return;
+    const { card, kind } = slotState;
+    if (kind === 'end') {
+      // 「没有更多」是原生的终止状态，不补偿也不重试。
+      timelineStall.inViewSince = 0;
+      return;
+    }
 
     const now = Date.now();
     const rect = card.getBoundingClientRect();
@@ -3727,33 +3797,83 @@
       rect.top <= viewport + TIMELINE_SENTINEL_MARGIN_PX &&
       rect.bottom >= -TIMELINE_SENTINEL_MARGIN_PX;
     if (!inView) {
-      // 哨兵被顶出视口，说明分页恢复正常，重新计时并清空失败计数。
+      // 哨兵被顶出视口，说明分页恢复正常，重新计时并清空所有失败计数。
       timelineStall.inViewSince = 0;
       timelineStall.staleNudges = 0;
+      timelineStall.retryClicks = 0;
+      timelineStall.lastRetryAt = 0;
+      timelineStall.pendingSince = 0;
       timelineStall.lastContentHeight = readTimelineContentHeight(scroller);
       return;
     }
 
     const contentHeight = readTimelineContentHeight(scroller);
-    if (
-      contentHeight - timelineStall.lastContentHeight >
-      TIMELINE_PAGE_GROWTH_PX
-    ) {
-      // 大幅增长＝新一页确实到了，重新开始计时。
+    const growth = contentHeight - timelineStall.lastContentHeight;
+    if (growth > 0) {
       timelineStall.lastContentHeight = contentHeight;
+      // 任何增长都说明新内容确实进来了。被屏蔽的微博和广告折叠成 1px 测量壳，
+      // 整页大部分被折叠时列表总高可能只涨几十像素；若要求"必须大幅增长"才算
+      // 成功，这种成功的续页会被记成失败，连续几次后失败计数触顶、补偿停摆。
       timelineStall.staleNudges = 0;
-      timelineStall.inViewSince = now;
-      return;
-    }
-    if (contentHeight > timelineStall.lastContentHeight) {
-      // 图片撑开导致的小幅重测，只更新基准，不重置计时。
-      timelineStall.lastContentHeight = contentHeight;
+      timelineStall.retryClicks = 0;
+      timelineStall.lastRetryAt = 0;
+      timelineStall.pendingSince = 0;
+      if (growth > TIMELINE_PAGE_GROWTH_PX) {
+        // 只有确实涨出一页的高度才重新等待页面稳定；图片撑开造成的小幅重测不
+        // 应推迟下一次补偿，否则被折叠得只剩几十像素的页面会迟迟补不上。
+        timelineStall.inViewSince = now;
+        return;
+      }
     }
 
     if (!timelineStall.inViewSince) {
       timelineStall.inViewSince = now;
       return;
     }
+
+    if (kind === 'action') {
+      // 「内容加载失败，请点击重试」和「点击加载更多」都是微博自带的原生控件，
+      // 按退避节奏代替用户点击即可，内容一旦到达（上方增长判定）即清零计数。
+      // 连续无效达到上限后停止，滚离底部后重新获得额度。
+      if (timelineStall.retryClicks >= TIMELINE_RETRY_MAX_CLICKS) return;
+      const retryDelay = TIMELINE_RETRY_BASE_MS << timelineStall.retryClicks;
+      const retryAnchor = Math.max(
+        timelineStall.lastRetryAt,
+        timelineStall.inViewSince
+      );
+      if (now - retryAnchor < retryDelay) return;
+      timelineStall.retryClicks += 1;
+      timelineStall.lastRetryAt = now;
+      timelineStall.pendingSince = now;
+      const clickable =
+        card.querySelector(
+          '[class*="nextPage"], a, button, [role="button"]'
+        ) || card;
+      clickable.click();
+      return;
+    }
+
+    // 补偿已触发但对应的内容请求还没出结果时不再叠加触发，避免在原生请求
+    // 在途时重复续页。
+    if (timelineStall.pendingSince) {
+      const requestCompleted =
+        timelineRequestLastDoneAt > timelineStall.pendingSince;
+      if (
+        !requestCompleted &&
+        now - timelineStall.pendingSince < TIMELINE_ACTION_PENDING_MS
+      ) {
+        return;
+      }
+      timelineStall.pendingSince = 0;
+    }
+    // 内容请求刚出结果时给渲染留一拍，先让上方的增长判定得出结论。
+    if (
+      timelineRequestLastDoneAt &&
+      now - timelineRequestLastDoneAt < TIMELINE_REQUEST_SETTLE_MS
+    ) {
+      return;
+    }
+
     if (now - timelineStall.inViewSince < TIMELINE_STALL_IDLE_MS) return;
     if (now - timelineStall.lastNudgeAt < TIMELINE_NUDGE_COOLDOWN_MS) return;
     // 时间线真的到头时不再无限重试；用户滚离底部后自动恢复额度。
@@ -3761,6 +3881,7 @@
 
     timelineStall.staleNudges += 1;
     timelineStall.lastNudgeAt = now;
+    timelineStall.pendingSince = now;
     nudgeNativeTimelineLoader(card);
   }
 
@@ -3922,7 +4043,6 @@
         return;
       }
       pauseVideosIn(target);
-      markTimelineScrollerCollapsed(target);
       target.setAttribute(HIDDEN_AD_ATTR, '1');
       hiddenAny = true;
     });
@@ -5055,6 +5175,8 @@
     passive: true,
     capture: true,
   });
+  // 只读地观察时间线内容请求的完成时刻，用于避免在原生请求仍在途时叠加续页。
+  ensureTimelineRequestObserver();
   // 滚到底后页面不再产生 scroll 事件，停滞检测必须有一个独立心跳来兜底。
   setInterval(() => {
     if (isRelationshipListPage()) return;
