@@ -430,8 +430,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.3\.2/);
-assert.match(source, /const SCRIPT_VERSION = '2\.3\.2'/);
+assert.match(source, /@version\s+2\.3\.3/);
+assert.match(source, /const SCRIPT_VERSION = '2\.3\.3'/);
 // 元数据版本号与运行时常量必须始终一致，否则设置面板会显示错误版本。
 assert.equal(
   source.match(/@version\s+(\S+)/)?.[1],
@@ -503,7 +503,55 @@ assert.match(onboardingFinishSource, /CFG = saveCfg\(normalizeCfg\(nextSettings\
 assert.match(onboardingFinishSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
 assert.match(onboardingFinishSource, /applyPanelSettingsNow\(\)/);
 assert.match(onboardingFinishSource, /syncLauncherButton\(\)/);
+assert.match(onboardingFinishSource, /syncCreatedSettingsPanelConfigUI\(\)/);
 assert.match(onboardingFinishSource, /reconcileHomeTimelineSetting\(/);
+const settingsPanelConfigSyncSource = sourceBetween(
+  '  function syncCreatedSettingsPanelConfigUI() {',
+  '  // ---- BL Store helpers'
+);
+assert.match(
+  settingsPanelConfigSyncSource,
+  /document\.querySelector\('\.wbset-panel'\)/
+);
+assert.match(
+  settingsPanelConfigSyncSource,
+  /new CustomEvent\(SETTINGS_CONFIG_SYNC_EVENT\)/
+);
+assert.match(
+  settingsSource,
+  /panel\.addEventListener\(SETTINGS_CONFIG_SYNC_EVENT,[\s\S]*?CFG = loadCfg\(\);[\s\S]*?refreshCfgUI\(\);/
+);
+class FakeSettingsConfigSyncEvent {
+  constructor(type) {
+    this.type = type;
+  }
+}
+const settingsConfigSyncEvents = [];
+const settingsConfigSyncPanel = {
+  dispatchEvent(event) {
+    settingsConfigSyncEvents.push(event);
+  },
+};
+const settingsConfigSyncContext = vm.createContext({
+  SETTINGS_CONFIG_SYNC_EVENT: 'wbset:config-sync',
+  CustomEvent: FakeSettingsConfigSyncEvent,
+  document: {
+    querySelector(selector) {
+      return selector === '.wbset-panel' ? settingsConfigSyncPanel : null;
+    },
+  },
+});
+vm.runInContext(
+  `${settingsPanelConfigSyncSource}
+   this.syncCreatedSettingsPanelConfigUI = syncCreatedSettingsPanelConfigUI;`,
+  settingsConfigSyncContext
+);
+assert.equal(
+  settingsConfigSyncContext.syncCreatedSettingsPanelConfigUI(),
+  true
+);
+assert.equal(settingsConfigSyncEvents.length, 1);
+assert.equal(settingsConfigSyncEvents[0].type, 'wbset:config-sync');
 assert.match(source, /if \(!isInsideCommentSurface\(el\)\) return null/);
 const commentRootSource = sourceBetween(
   '  function findCommentRootForUID(',
@@ -545,7 +593,7 @@ const virtualGapSource = sourceBetween(
 );
 assert.match(
   virtualGapSource,
-  /updateNativeTimelinePaginationGuards\(scanRoot\)/
+  /recoverStalledTimelinePagination\(\)/
 );
 assert.doesNotMatch(
   virtualGapSource,
@@ -561,9 +609,23 @@ assert.equal(
   false,
   'runtime CSS must not override Vue recycler height'
 );
+const virtualShellSizeMatch = source.match(
+  /const VIRTUAL_MEASUREMENT_SHELL_PX = (\d+);/
+);
+assert.ok(virtualShellSizeMatch, 'virtual measurement shell size must be explicit');
+const virtualShellSize = Number(virtualShellSizeMatch[1]);
+assert.ok(
+  ~~(virtualShellSize * 0.994) > 0,
+  'scaled shell height must survive vue-virtual-scroller 1.x integer flooring'
+);
+assert.equal(
+  ~~(1 * 0.994),
+  0,
+  'the former 1px shell reproduces the live zero-size cache failure'
+);
 assert.match(
   source,
-  /\.vue-recycle-scroller__item-view > \$\{BLOCKED_CONTENT_HIDE_SELECTOR\}[\s\S]*?height:\s*1px !important;[\s\S]*?visibility:\s*hidden !important;/
+  /\.vue-recycle-scroller__item-view > \$\{BLOCKED_CONTENT_HIDE_SELECTOR\}[\s\S]*?height:\s*\$\{VIRTUAL_MEASUREMENT_SHELL_PX\}px !important;[\s\S]*?visibility:\s*hidden !important;/
 );
 // 旧的 192px「分页保护间距」对微博的哨兵毫无作用：哨兵用 rootMargin 1500px
 // 的 IntersectionObserver 监听，推开 192px 根本不会改变可见性判定；而且它取的
@@ -577,16 +639,96 @@ assert.doesNotMatch(
   source,
   /\[class\*="vue-recycle-scroller__item-view"\]\s*\{[\s\S]*?(?:transform|min-height):/
 );
+const nativeVirtualRemeasureSource = sourceBetween(
+  '  function requestNativeVirtualItemRemeasure(',
+  '  function hideContentRoot('
+);
+assert.match(
+  nativeVirtualRemeasureSource,
+  /shell\.parentElement\?\.matches\(VIRTUAL_VIEW_SELECTOR\)/
+);
+assert.match(
+  nativeVirtualRemeasureSource,
+  /new CustomEvent\('resize',[\s\S]*?contentRect:[\s\S]*?width: rect\.width,[\s\S]*?height: rect\.height/
+);
+assert.doesNotMatch(
+  nativeVirtualRemeasureSource,
+  /\.style\.|transform|minHeight|scrollTo|scrollBy/
+);
+class FakeVirtualElement {
+  constructor({ isView = false, rect = null } = {}) {
+    this.isView = isView;
+    this.rect = rect;
+    this.parentElement = null;
+    this.isConnected = true;
+    this.events = [];
+  }
+  matches(selector) {
+    return this.isView && selector === '.virtual-view';
+  }
+  getBoundingClientRect() {
+    return this.rect;
+  }
+  dispatchEvent(event) {
+    this.events.push(event);
+  }
+}
+class FakeCustomEvent {
+  constructor(type, options) {
+    this.type = type;
+    this.detail = options.detail;
+  }
+}
+const virtualFrames = [];
+const virtualTimers = [];
+const nativeVirtualRemeasureContext = vm.createContext({
+  Element: FakeVirtualElement,
+  CustomEvent: FakeCustomEvent,
+  VIRTUAL_VIEW_SELECTOR: '.virtual-view',
+  requestAnimationFrame(callback) {
+    virtualFrames.push(callback);
+  },
+  setTimeout(callback) {
+    virtualTimers.push(callback);
+  },
+});
+vm.runInContext(
+  `${nativeVirtualRemeasureSource}
+   this.requestNativeVirtualItemRemeasure = requestNativeVirtualItemRemeasure;`,
+  nativeVirtualRemeasureContext
+);
+const virtualView = new FakeVirtualElement({
+  isView: true,
+  rect: { width: 640, height: 1.988 },
+});
+const virtualShell = new FakeVirtualElement();
+virtualShell.parentElement = virtualView;
+nativeVirtualRemeasureContext.requestNativeVirtualItemRemeasure(virtualShell);
+while (virtualFrames.length) virtualFrames.shift()();
+virtualTimers.forEach((callback) => callback());
+assert.equal(
+  virtualView.events.length,
+  1,
+  'the native virtual-item resize event must be coalesced to one dispatch'
+);
+assert.equal(virtualView.events[0].type, 'resize');
+assert.deepEqual(
+  {
+    width: virtualView.events[0].detail.contentRect.width,
+    height: virtualView.events[0].detail.contentRect.height,
+  },
+  { width: 640, height: 1.988 }
+);
 assert.match(
   sourceBetween(
     '  function hideContentRoot(',
     '  let floatingVideoSuppressUntil ='
   ),
-  /markTimelineScrollerCollapsed\(target\)[\s\S]*?BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR/
+  /BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR[\s\S]*?requestNativeVirtualItemRemeasure\(target\)/
 );
 const floatingVideoSuppressionSource = sourceBetween(
   '  function suppressFloatingVideoPlayers(',
-  '  function getNativeTimelinePaginationParts('
+  '  // vue-virtual-scroller 会渲染两个'
 );
 assert.match(
   source,
@@ -620,6 +762,10 @@ assert.match(
   clearBlockedStateSource,
   /originalAria !== null[\s\S]*?setAttribute\('aria-hidden', originalAria\)/
 );
+assert.match(
+  clearBlockedStateSource,
+  /requestNativeVirtualItemRemeasure\(el\)/
+);
 assert.doesNotMatch(
   clearBlockedStateSource,
   /style\.(?:removeProperty|setProperty)|style\.[A-Za-z]+\s*=/
@@ -645,6 +791,7 @@ class FakeRestorableElement {
     this.attributes.delete(name);
   }
 }
+const remeasureProbe = { calls: 0 };
 const blockedRestoreContext = vm.createContext({
   Element: FakeRestorableElement,
   BLOCKED_CONTENT_HIDE_ATTR: 'data-hidden',
@@ -652,6 +799,9 @@ const blockedRestoreContext = vm.createContext({
   BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR: 'data-original-aria',
   BLOCKED_CONTENT_ARIA_ABSENT: '__absent__',
   COMMENT_CONTENT_ROOT_ATTR: 'data-comment-root',
+  requestNativeVirtualItemRemeasure() {
+    remeasureProbe.calls += 1;
+  },
 });
 vm.runInContext(
   `${clearBlockedStateSource}
@@ -681,6 +831,11 @@ const nativeCardWithoutAria = new FakeRestorableElement({
 blockedRestoreContext.clearOwnBlockedContentHideState(nativeCardWithoutAria);
 assert.equal(nativeCardWithoutAria.hasAttribute('aria-hidden'), false);
 assert.equal(nativeCardWithoutAria.style.cssText, nativeStyleBeforeRestore);
+assert.equal(
+  remeasureProbe.calls,
+  2,
+  'restoring either aria state must request a native virtual-item remeasure'
+);
 const timelineStallSource = sourceBetween(
   '  function findNativeTimelineLoaderCard(scroller) {',
   '  function compactVirtualScrollerGaps('
@@ -731,10 +886,18 @@ assert.match(
   ),
   /vue-recycle-scroller__item-wrapper[\s\S]*?wrapper\.style\.minHeight/
 );
-// 只有大幅增长才算"新一页到了"，否则图片撑开的小幅重测会不断重置计时。
+// 大幅增长才重新等待页面稳定；动作成功本身必须比较动作前后的最终净增长。
 assert.match(
   timelineStallSource,
-  /timelineStall\.lastContentHeight >\s*TIMELINE_PAGE_GROWTH_PX/
+  /heightChange > TIMELINE_PAGE_GROWTH_PX/
+);
+assert.match(
+  timelineStallSource,
+  /const actionGrowth =[\s\S]*?contentHeight - timelineStall\.pendingStartHeight/
+);
+assert.match(
+  timelineStallSource,
+  /heightChange < 0[\s\S]*?timelineStall\.inViewSince = now;[\s\S]*?return;/
 );
 // 所有入口都不传 root，统一解析到同一个滚动容器，避免不同入口命中不同容器
 // 而把停滞计时反复重置。
@@ -804,7 +967,7 @@ const loaderLookupContext = vm.createContext({ Element: FakeElement });
 vm.runInContext(
   `${sourceBetween(
     '  function findNativeTimelineLoaderCard(scroller) {',
-    '  function markTimelineScrollerCollapsed('
+    '  function classifyNativeTimelineSlotCard('
   )}
   globalThis.findLoaderCard = findNativeTimelineLoaderCard;`,
   loaderLookupContext
@@ -850,6 +1013,11 @@ function runTimelineStallScenario({
   slotKind = 'loading',
   // 第几次点击重试后恢复为加载状态。
   retryRecoversAfter = Infinity,
+  // 模拟请求保持在途的拍数，用来确认期间不会重复触发。
+  requestCompletionDelayTicks = 0,
+  // 模拟屏蔽项完成原生重测后，列表总高先下降再继续续页。
+  collapseAtTick = -1,
+  collapsePx = 0,
 } = {}) {
   let tick = 0;
   const sentinelPresent = () =>
@@ -869,6 +1037,7 @@ function runTimelineStallScenario({
   let clock = 1_000_000;
   const nudges = [];
   const retryClicks = [];
+  const pendingCompletions = [];
   class StallElement {}
   const spinner = new StallElement();
   spinner.className = 'woo-spinner-main';
@@ -946,7 +1115,12 @@ function runTimelineStallScenario({
     'onNudge',
     `${stallSource}
      nudgeNativeTimelineLoader = onNudge;
-     return { recover: recoverStalledTimelinePagination };`
+     return {
+       recover: recoverStalledTimelinePagination,
+       markRequestDone(at) {
+         timelineRequestLastDoneAt = at;
+       },
+     };`
   );
   const instance = factory(
     StallElement,
@@ -967,7 +1141,23 @@ function runTimelineStallScenario({
   try {
     for (let i = 0; i < ticks; i += 1) {
       tick = i;
+      if (i === collapseAtTick) contentHeight -= collapsePx;
+      pendingCompletions
+        .filter((completion) => completion.tick === i)
+        .forEach((completion) => instance.markRequestDone(completion.at));
+      const actionCountBefore = nudges.length + retryClicks.length;
       instance.recover();
+      const actionCountAfter = nudges.length + retryClicks.length;
+      if (actionCountAfter > actionCountBefore) {
+        if (requestCompletionDelayTicks > 0) {
+          pendingCompletions.push({
+            tick: i + requestCompletionDelayTicks,
+            at: clock + 1,
+          });
+        } else {
+          instance.markRequestDone(clock + 1);
+        }
+      }
       // 与脚本里的停滞检测心跳保持一致。
       clock += 250;
     }
@@ -994,6 +1184,15 @@ assert.ok(
 assert.ok(
   runTimelineStallScenario({ pageGrowthPx: 60, ticks: 96 }).nudges > 3,
   'pages that are mostly collapsed still count as successful loads'
+);
+assert.ok(
+  runTimelineStallScenario({
+    pageGrowthPx: 60,
+    ticks: 120,
+    collapseAtTick: 2,
+    collapsePx: 660,
+  }).nudges > 3,
+  'a native height collapse must become the new baseline before small pages arrive'
 );
 // 哨兵被顶出视口 = 原生分页正常，不能插手。
 assert.equal(runTimelineStallScenario({ sentinelTop: 4000 }).nudges, 0);
@@ -1035,6 +1234,16 @@ const retryHopeless = runTimelineStallScenario({
 assert.ok(
   retryHopeless.retryClicks > 0 && retryHopeless.retryClicks <= 4,
   'retrying a permanently failing card must be bounded'
+);
+assert.equal(
+  runTimelineStallScenario({
+    slotKind: 'action',
+    pageGrowthPx: 0,
+    ticks: 10,
+    requestCompletionDelayTicks: 8,
+  }).retryClicks,
+  1,
+  'an in-flight native retry must never be clicked a second time'
 );
 // 「没有更多」是原生的终止状态，既不补偿也不点击。
 const endOfFeed = runTimelineStallScenario({ slotKind: 'end', ticks: 160 });
@@ -1497,7 +1706,11 @@ assert.match(
 );
 assert.match(
   sidebarVisibilitySource,
-  /rail\.appendChild\(marker\);\s*\n\s*marker\.remove\(\);/
+  /#__sidebar,[\s\S]*?\.rightSide,[\s\S]*?\.wbpro-side-main/
+);
+assert.match(
+  sidebarVisibilitySource,
+  /root\.appendChild\(marker\);\s*\n\s*marker\.remove\(\);/
 );
 assert.match(
   sidebarVisibilitySource,
@@ -1560,8 +1773,8 @@ assert.match(
   /unmarkPanelHidden\(panel\)/
 );
 
-// 虚拟列表里的广告必须与被屏蔽微博使用同一套 1px 测量壳，否则 DynamicScroller
-// 会忽略 0 高度并沿用旧行高，留下大片空白。
+// 虚拟列表里的广告必须与被屏蔽微博使用同一套正整数测量壳，否则
+// DynamicScroller 会忽略 0 高度并沿用旧行高，留下大片空白。
 const runtimeCSSSource = sourceBetween(
   '  function generateCSSRules() {',
   '  function injectCSSWhenReady('
@@ -1702,6 +1915,7 @@ const remoteConfigSource = sourceBetween(
 );
 assert.match(remoteConfigSource, /WB_INTERNAL\.applyConfig\?\.\(CFG\)/);
 assert.match(remoteConfigSource, /reconcileHomeTimelineSetting\(/);
+assert.match(remoteConfigSource, /syncCreatedSettingsPanelConfigUI\(\)/);
 
 const hotBandSource = sourceBetween(
   '  function hideSearchHotBand(root = document) {',

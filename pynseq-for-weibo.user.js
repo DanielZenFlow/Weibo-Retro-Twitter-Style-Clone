@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.3.2
+// @version      2.3.3
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -41,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.3.2';
+  const SCRIPT_VERSION = '2.3.3';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -1090,7 +1090,8 @@
   // 微博的"加载下一页"哨兵用 vue-observe-visibility 监听，rootMargin 为
   // 1500px，并且只在可见性发生翻转（不可见 -> 可见）时才回调一次。正常情况下
   // 新一页会把哨兵顶到 1500px 之外，于是下次滚动回来才能再次触发。脚本把被
-  // 屏蔽的微博和广告折叠成 1px 测量壳，新一页的实际高度可能不足 1500px，哨兵
+  // 屏蔽的微博和广告折叠成极薄的正尺寸测量壳，新一页的实际高度可能不足
+  // 1500px，哨兵
   // 便一直停在"已可见"状态，回调不再触发——表现为拉到底后再也加载不出内容。
   // 检测到这种停滞时，短暂隐藏哨兵再恢复，制造一次可见性翻转让微博自己续页。
   // 触发条件必须避开 document.scrollHeight：微博的图片、视频和侧栏会持续改变
@@ -1128,6 +1129,11 @@
     '.vue-recycle-scroller__item-wrapper',
     '[class*="vue-recycle-scroller__item-wrapper"]',
   ].join(',');
+  // vue-virtual-scroller 1.x 用 `~~height` 把测量值截为整数，并忽略结果 0。
+  // 在页面缩放 / DPR 像素对齐下，CSS 1px 实测可能略小于 1（现场为
+  // 0.994px），仍会被截成 0 并沿用旧行高。2px 壳实测后至少保留为 1，
+  // 同时在视觉上仍完全不可见。
+  const VIRTUAL_MEASUREMENT_SHELL_PX = 2;
   const VIRTUAL_ITEM_SELECTOR = [
     '.vue-recycle-scroller__item-view',
     '[class*="vue-recycle-scroller__item-view"]',
@@ -1924,14 +1930,17 @@
         /*
          * DynamicScroller ignores a measured size of exactly 0 and keeps the
          * previous cached row height, which leaves a large blank slot. Keep a
-         * one-pixel, fully invisible measurement shell so Vue records the new
-         * positive size and moves the following row itself. We intentionally
+         * thin, fully invisible measurement shell so Vue records a positive
+         * integer size and moves the following row itself. A CSS 1px shell is
+         * unsafe because vue-virtual-scroller 1.x floors the measured height
+         * and page scaling can make the rect slightly smaller than 1px. We
+         * intentionally
          * do not touch the outer item view, its transform, or wrapper height.
          */
         display: block !important;
-        height: 1px !important;
-        min-height: 1px !important;
-        max-height: 1px !important;
+        height: ${VIRTUAL_MEASUREMENT_SHELL_PX}px !important;
+        min-height: ${VIRTUAL_MEASUREMENT_SHELL_PX}px !important;
+        max-height: ${VIRTUAL_MEASUREMENT_SHELL_PX}px !important;
         margin: 0 !important;
         padding: 0 !important;
         border: 0 !important;
@@ -2793,6 +2802,7 @@
       el.removeAttribute('aria-hidden');
     }
     el.removeAttribute(BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR);
+    requestNativeVirtualItemRemeasure(el);
   }
 
   function clearBlockedContentHideState(root) {
@@ -3382,6 +3392,54 @@
     return target;
   }
 
+  // DynamicScrollerItem 1.x observes its outer item-view and handles a local
+  // `resize` CustomEvent carrying contentRect. Usually its ResizeObserver sends
+  // this event for us, but attribute-driven userscript styles can be coalesced
+  // with Vue's own recycling update. Send the same scoped notification after a
+  // hide/restore transition so the current item id is remeasured immediately.
+  // This never changes Vue's transform, item array or wrapper height.
+  function requestNativeVirtualItemRemeasure(shell) {
+    if (!(shell instanceof Element)) return;
+    const view =
+      shell.parentElement?.matches(VIRTUAL_VIEW_SELECTOR)
+        ? shell.parentElement
+        : null;
+    if (!view) return;
+
+    let sent = false;
+    const send = () => {
+      if (sent) return;
+      if (!view.isConnected || shell.parentElement !== view) {
+        sent = true;
+        return;
+      }
+      const rect = view.getBoundingClientRect();
+      if (
+        !Number.isFinite(rect.width) ||
+        !Number.isFinite(rect.height) ||
+        rect.height < 1
+      ) {
+        return;
+      }
+      sent = true;
+      view.dispatchEvent(
+        new CustomEvent('resize', {
+          detail: {
+            contentRect: {
+              width: rect.width,
+              height: rect.height,
+            },
+          },
+        })
+      );
+    };
+
+    requestAnimationFrame(() => requestAnimationFrame(send));
+    // Background tabs can suspend rAF. The timer is only a fallback and is
+    // coalesced by `sent`, so the native size handler receives at most one event.
+    setTimeout(send, 160);
+  }
+
   function hideContentRoot(root, uid = '') {
     if (isRelationshipListPage()) {
       restoreHiddenRelationshipItems(document);
@@ -3417,6 +3475,7 @@
       target.setAttribute(BLOCKED_CONTENT_UID_ATTR, id);
     }
     target.setAttribute('aria-hidden', 'true');
+    requestNativeVirtualItemRemeasure(target);
     suppressFloatingVideoPlayers(document);
     return true;
   }
@@ -3713,6 +3772,7 @@
     lastContentHeight: 0,
     nudging: false,
     pendingSince: 0,
+    pendingStartHeight: 0,
     retryClicks: 0,
     lastRetryAt: 0,
   };
@@ -3723,6 +3783,7 @@
     timelineStall.lastNudgeAt = 0;
     timelineStall.staleNudges = 0;
     timelineStall.pendingSince = 0;
+    timelineStall.pendingStartHeight = 0;
     timelineStall.retryClicks = 0;
     timelineStall.lastRetryAt = 0;
     timelineStall.lastContentHeight = scroller
@@ -3787,6 +3848,8 @@
     if (kind === 'end') {
       // 「没有更多」是原生的终止状态，不补偿也不重试。
       timelineStall.inViewSince = 0;
+      timelineStall.pendingSince = 0;
+      timelineStall.pendingStartHeight = 0;
       return;
     }
 
@@ -3803,22 +3866,32 @@
       timelineStall.retryClicks = 0;
       timelineStall.lastRetryAt = 0;
       timelineStall.pendingSince = 0;
+      timelineStall.pendingStartHeight = 0;
       timelineStall.lastContentHeight = readTimelineContentHeight(scroller);
       return;
     }
 
     const contentHeight = readTimelineContentHeight(scroller);
-    const growth = contentHeight - timelineStall.lastContentHeight;
-    if (growth > 0) {
+    const heightChange = contentHeight - timelineStall.lastContentHeight;
+    if (heightChange !== 0) {
       timelineStall.lastContentHeight = contentHeight;
-      // 任何增长都说明新内容确实进来了。被屏蔽的微博和广告折叠成 1px 测量壳，
-      // 整页大部分被折叠时列表总高可能只涨几十像素；若要求"必须大幅增长"才算
-      // 成功，这种成功的续页会被记成失败，连续几次后失败计数触顶、补偿停摆。
-      timelineStall.staleNudges = 0;
-      timelineStall.retryClicks = 0;
-      timelineStall.lastRetryAt = 0;
-      timelineStall.pendingSince = 0;
-      if (growth > TIMELINE_PAGE_GROWTH_PX) {
+      if (!timelineStall.pendingSince && heightChange > 0) {
+        // 没有补偿动作在途时，任何增长都说明原生续页或条目重测取得了进展。
+        // 大部分条目被折叠时，一页可能只增长数十像素，不能要求必须涨满一页。
+        timelineStall.staleNudges = 0;
+        timelineStall.retryClicks = 0;
+        timelineStall.lastRetryAt = 0;
+      }
+      if (!timelineStall.pendingSince && heightChange < 0) {
+        // 折叠成功会让 DynamicScroller 总高下降。必须把下降后的值接纳为新基线；
+        // 否则后续一页即使成功增加了几十像素，也可能仍低于旧基线并被记为失败。
+        timelineStall.inViewSince = now;
+        return;
+      }
+      if (
+        !timelineStall.pendingSince &&
+        heightChange > TIMELINE_PAGE_GROWTH_PX
+      ) {
         // 只有确实涨出一页的高度才重新等待页面稳定；图片撑开造成的小幅重测不
         // 应推迟下一次补偿，否则被折叠得只剩几十像素的页面会迟迟补不上。
         timelineStall.inViewSince = now;
@@ -3831,10 +3904,45 @@
       return;
     }
 
+    // 补偿已触发但对应的内容请求还没出结果时不再叠加触发，避免在原生请求
+    // 在途时重复续页。成功判定始终比较"动作前基线"与请求稳定后的最终高度，
+    // 不会被同一页先按估算高度撑开、再折叠为测量壳的中间态误导。
+    if (timelineStall.pendingSince) {
+      const requestCompleted =
+        timelineRequestLastDoneAt > timelineStall.pendingSince;
+      if (
+        !requestCompleted &&
+        now - timelineStall.pendingSince < TIMELINE_ACTION_PENDING_MS
+      ) {
+        return;
+      }
+      if (
+        requestCompleted &&
+        now - timelineRequestLastDoneAt < TIMELINE_REQUEST_SETTLE_MS
+      ) {
+        return;
+      }
+      const actionGrowth =
+        contentHeight - timelineStall.pendingStartHeight;
+      timelineStall.pendingSince = 0;
+      timelineStall.pendingStartHeight = 0;
+      if (actionGrowth > 0) {
+        // 最终净增长为正才表示这一动作确实换来了内容；即使整页都被折叠，
+        // 每个正尺寸测量壳仍会让总高增长。成功后恢复无限续页额度。
+        timelineStall.staleNudges = 0;
+        timelineStall.retryClicks = 0;
+        timelineStall.lastRetryAt = 0;
+        if (actionGrowth > TIMELINE_PAGE_GROWTH_PX) {
+          timelineStall.inViewSince = now;
+        }
+        return;
+      }
+    }
+
     if (kind === 'action') {
       // 「内容加载失败，请点击重试」和「点击加载更多」都是微博自带的原生控件，
-      // 按退避节奏代替用户点击即可，内容一旦到达（上方增长判定）即清零计数。
-      // 连续无效达到上限后停止，滚离底部后重新获得额度。
+      // 按退避节奏代替用户点击。pending 状态在本分支之前处理，确保前一次请求
+      // 未完成时绝不会再次点击。
       if (timelineStall.retryClicks >= TIMELINE_RETRY_MAX_CLICKS) return;
       const retryDelay = TIMELINE_RETRY_BASE_MS << timelineStall.retryClicks;
       const retryAnchor = Math.max(
@@ -3845,32 +3953,12 @@
       timelineStall.retryClicks += 1;
       timelineStall.lastRetryAt = now;
       timelineStall.pendingSince = now;
+      timelineStall.pendingStartHeight = contentHeight;
       const clickable =
         card.querySelector(
           '[class*="nextPage"], a, button, [role="button"]'
         ) || card;
       clickable.click();
-      return;
-    }
-
-    // 补偿已触发但对应的内容请求还没出结果时不再叠加触发，避免在原生请求
-    // 在途时重复续页。
-    if (timelineStall.pendingSince) {
-      const requestCompleted =
-        timelineRequestLastDoneAt > timelineStall.pendingSince;
-      if (
-        !requestCompleted &&
-        now - timelineStall.pendingSince < TIMELINE_ACTION_PENDING_MS
-      ) {
-        return;
-      }
-      timelineStall.pendingSince = 0;
-    }
-    // 内容请求刚出结果时给渲染留一拍，先让上方的增长判定得出结论。
-    if (
-      timelineRequestLastDoneAt &&
-      now - timelineRequestLastDoneAt < TIMELINE_REQUEST_SETTLE_MS
-    ) {
       return;
     }
 
@@ -3882,6 +3970,7 @@
     timelineStall.staleNudges += 1;
     timelineStall.lastNudgeAt = now;
     timelineStall.pendingSince = now;
+    timelineStall.pendingStartHeight = contentHeight;
     nudgeNativeTimelineLoader(card);
   }
 
@@ -4044,6 +4133,7 @@
       }
       pauseVideosIn(target);
       target.setAttribute(HIDDEN_AD_ATTR, '1');
+      requestNativeVirtualItemRemeasure(target);
       hiddenAny = true;
     });
     return hiddenAny;
@@ -4060,6 +4150,7 @@
       .forEach((node) => nodes.push(node));
     Array.from(new Set(nodes)).forEach((node) => {
       node.removeAttribute(HIDDEN_AD_ATTR);
+      requestNativeVirtualItemRemeasure(node);
     });
   }
 
@@ -5236,6 +5327,18 @@
   }
   let CFG = loadCfg();
   const LAYOUT_REFRESH_EVENT = 'wb-retro-layout-refresh';
+  const SETTINGS_CONFIG_SYNC_EVENT = 'wbset:config-sync';
+
+  // The onboarding dialog and the settings panel share the same persisted cfg,
+  // but the panel is created once and then only hidden. Keep its existing form
+  // controls synchronized immediately after another UI writes cfg instead of
+  // waiting for a later panel-open cycle to repair stale checkbox state.
+  function syncCreatedSettingsPanelConfigUI() {
+    const panel = document.querySelector('.wbset-panel');
+    if (!panel?.dispatchEvent) return false;
+    panel.dispatchEvent(new CustomEvent(SETTINGS_CONFIG_SYNC_EVENT));
+    return true;
+  }
 
   // ---- BL Store helpers (operate on GM cache only) ----
   function readBLExclusionSet() {
@@ -5522,14 +5625,18 @@
   // 的注释节点，制造一次真实的 childList 变化，把重排交回微博原生逻辑，脚本
   // 自身不写入任何轨道定位或占位高度。
   function nudgeNativeSidebarObserver() {
+    const roots = new Set();
     document
-      .querySelectorAll('.rightSide, [class*="_sideBox_"]')
-      .forEach((rail) => {
-        if (!rail.isConnected) return;
-        const marker = document.createComment('wb-pynseq-relayout');
-        rail.appendChild(marker);
-        marker.remove();
-      });
+      .querySelectorAll(
+        '#__sidebar, .rightSide, [class*="_sideBox_"], .wbpro-side-main'
+      )
+      .forEach((root) => roots.add(root));
+    roots.forEach((root) => {
+      if (!root.isConnected) return;
+      const marker = document.createComment('wb-pynseq-relayout');
+      root.appendChild(marker);
+      marker.remove();
+    });
   }
 
   function requestNativeSidebarRelayout() {
@@ -6193,6 +6300,7 @@
       CFG = saveCfg(normalizeCfg(nextSettings));
       GM_setValue(ONBOARDING_DONE_KEY, true);
       overlay.remove();
+      syncCreatedSettingsPanelConfigUI();
       let runtimeApplyError = null;
       try {
         WB_INTERNAL.applyConfig?.(CFG);
@@ -7123,6 +7231,10 @@
       panel.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closePanel();
       });
+      panel.addEventListener(SETTINGS_CONFIG_SYNC_EVENT, () => {
+        CFG = loadCfg();
+        refreshCfgUI();
+      });
       panel.addEventListener('wbset:open', () => {
         CFG = loadCfg();
         refreshCfgUI();
@@ -7188,10 +7300,7 @@
           previousLatestTimeline,
           CFG.defaultLatestTimeline
         );
-        const panel = document.querySelector('.wbset-panel');
-        if (panel?.style.display !== 'none') {
-          panel.dispatchEvent(new CustomEvent('wbset:open'));
-        }
+        syncCreatedSettingsPanelConfigUI();
       }
     );
   }
