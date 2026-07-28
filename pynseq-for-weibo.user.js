@@ -4,7 +4,7 @@
 // @name:zh-CN   Pynseq for Weibo｜屏序·微博
 // @name:en      Pynseq for Weibo｜屏序·微博
 // @namespace    https://github.com/DanielZenFlow/Pynseq-Weibo
-// @version      2.3.3
+// @version      2.3.4
 // @description  模仿早期 Twitter 的时间线展示，支持默认进入最新微博、按本地屏蔽列表隐藏内容、过滤广告、精简导航和侧栏，并提供新浪微博官方黑名单同步及本地列表管理。
 // @description:en Restore a chronological Weibo timeline, locally block unwanted users, filter ads, simplify navigation, and manage official Weibo blocklist synchronization.
 // @author       DanielZenFlow
@@ -41,7 +41,7 @@
   const WB_INTERNAL = Object.create(null);
   const THROTTLE_MS = 350; // 新浪微博官方黑名单分页请求间隔（毫秒）
   const SCRIPT_NAME = 'Pynseq for Weibo｜屏序·微博';
-  const SCRIPT_VERSION = '2.3.3';
+  const SCRIPT_VERSION = '2.3.4';
   const GITHUB_URL = 'https://github.com/DanielZenFlow/Pynseq-Weibo';
   const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/danielzenflow';
   const ONBOARDING_DONE_KEY = 'pynseq_for_weibo_onboarding_done_v1';
@@ -2382,8 +2382,7 @@
     '[usercard]',
     '[data-usercard]',
     '[tbinfo*="ouid="]',
-    '[action-data*="uid="]',
-    '[action-data*="ouid="]',
+    '[action-type="reply"][action-data*="ouid="]',
     '[data-card*="uid"]',
     'a[href*="/u/"]',
     'a[href*="/p/100505"]',
@@ -2403,12 +2402,19 @@
     '[node-type="feed_list_item"]',
   ].join(',');
   const COMMENT_CONTENT_ROOT_ATTR = 'data-__wb_comment_root_by_userscript';
-  const DOM_COMMENT_ROOT_SELECTOR = [
-    `[${COMMENT_CONTENT_ROOT_ATTR}]`,
+  const DOM_COMMENT_ITEM_ROOT_SELECTOR = [
+    '.card-review[comment_id]',
+    '[comment_id]',
+    '[comment-id]',
+    '[data-comment-id]',
     '.wbpro-list > .item1',
     '.wbpro-list [class~="item1"]',
     '.wbpro-list .list2 > .item2',
     '.wbpro-list [class~="item2"]',
+  ].join(',');
+  const DOM_COMMENT_ROOT_SELECTOR = [
+    `[${COMMENT_CONTENT_ROOT_ATTR}]`,
+    DOM_COMMENT_ITEM_ROOT_SELECTOR,
     '[class*="Comment_wrap_"]',
     '[class*="Comment_item_"]',
     '[class*="CommentItem"]',
@@ -2419,9 +2425,98 @@
     '[action-type*="comment"]',
     '[node-type*="comment"]',
   ].join(',');
+  const DOM_COMMENT_COLLECTION_SELECTOR = [
+    '.wbpro-list',
+    '[node-type="feed_list_commentList"]',
+    '[node-type$="commentList"]',
+    '[action-type$="commentList"]',
+    '[class~="comment-list"]',
+    '[class~="comment_list"]',
+    '[class*="CommentList_"]',
+    '[class*="commentList_"]',
+    '[role="list"][aria-label*="评论"]',
+  ].join(',');
+  const DOM_USER_CARD_ITEM_ROOT_SELECTOR = [
+    '.card-user-b',
+    '.card-user-c',
+    '[class*="UserCard_item_"]',
+    '[class*="UserCardItem"]',
+    '[class*="user-card-item"]',
+    '[class*="user_card_item"]',
+    '[class*="User_item_"]',
+    '[class*="userItem_"]',
+    '[data-user-id][role="listitem"]',
+    '[data-uid][role="listitem"]',
+  ].join(',');
+  const DOM_INTERACTION_SURFACE_SELECTOR = [
+    '[class*="RepostList"]',
+    '[class*="repost-list"]',
+    '[class*="repost_list"]',
+    '[class*="LikeList"]',
+    '[class*="like-list"]',
+    '[class*="like_list"]',
+    '[class*="AttitudeList"]',
+    '[class*="attitude-list"]',
+    '[class*="attitude_list"]',
+    '[node-type*="repost_list"]',
+    '[node-type*="like_list"]',
+    '[action-type*="repost_list"]',
+    '[action-type*="like_list"]',
+    '[aria-label*="转发列表"]',
+    '[aria-label*="点赞列表"]',
+  ].join(',');
+  const DOM_INTERACTION_ITEM_ROOT_SELECTOR = [
+    DOM_USER_CARD_ITEM_ROOT_SELECTOR,
+    '[role="listitem"]',
+    'li',
+  ].join(',');
+  const USER_CARD_CONTENT_ROOT_ATTR =
+    'data-__wb_user_card_root_by_userscript';
+  const INTERACTION_CONTENT_ROOT_ATTR =
+    'data-__wb_interaction_root_by_userscript';
+  const SEARCH_RESULT_AUTHOR_SELECTOR = [
+    '.card-feed .content > .info a.name[href]',
+    '.card-feed .content > .info [nick-name]',
+    '.card-feed .avator a[href]',
+    '.card-feed .avatar a[href]',
+    '.content > .info a.name[href]',
+  ].join(',');
+  const DOM_POST_AUTHOR_CARRIER_SELECTOR = [
+    SEARCH_RESULT_AUTHOR_SELECTOR,
+    '[class*="Feed_head_"] [class*="_name_"]',
+    '[class*="Feed_header_"] [class*="_name_"]',
+    '[class*="_author_"] [class*="_name_"]',
+    '[class*="_userInfo_"] [class*="_name_"]',
+    '[class*="_userinfo_"] [class*="_name_"]',
+    'header [class*="_name_"]',
+    'header a[nick-name][href]',
+    'header a[href*="/u/"]',
+    'header [usercard]',
+    'header [data-user-card]',
+    'header [data-usercard]',
+  ].join(',');
+  const DOM_COMMENT_AUTHOR_CARRIER_SELECTOR = [
+    ':scope > .item1in > div:first-child a[href*="/u/"]',
+    ':scope > .item1in > .con1 > .text > a:first-child[href]',
+    ':scope > .item2in > div:first-child a[href*="/u/"]',
+    ':scope > .item2in > .con2 > .text > a:first-child[href]',
+    ':scope > .content > .txt a.name[href]',
+    ':scope > .content > .txt a[nick-name][href]',
+    ':scope > .con1 > .info a.name[href]',
+    ':scope > .con1 > .info a[nick-name][href]',
+    ':scope > .avator a[href]',
+    ':scope > .avatar a[href]',
+    '[class*="_author_"] [class*="_name_"]',
+    '[class*="_header_"] [class*="_name_"]',
+    'a.name[nick-name][href]',
+    'a.name[usercard][href]',
+    'a.name[data-user-card][href]',
+    'a.name[data-usercard][href]',
+  ].join(',');
   const DOM_CONTENT_ROOT_SELECTOR = [
     DOM_POST_ROOT_SELECTOR,
     DOM_COMMENT_ROOT_SELECTOR,
+    DOM_USER_CARD_ITEM_ROOT_SELECTOR,
   ].join(',');
   const PRIMARY_CONTENT_ROOT_SELECTOR = [
     'article',
@@ -2496,8 +2591,6 @@
     '[usercard]',
     '[data-usercard]',
     '[nick-name]',
-    '[action-data*="uid="]',
-    '[action-data*="ouid="]',
     'a[href*="/u/"]',
     'a[href*="/p/100505"]',
     'a[href*="/n/"]',
@@ -2608,7 +2701,6 @@
       'usercard',
       'data-usercard',
       'data-user-card',
-      'action-data',
       'tbinfo',
       'suda-data',
       'diss-data',
@@ -2622,12 +2714,20 @@
       );
     });
 
+    // action-data is an event payload, not a general content-owner signal.
+    // Only reply controls use it here as a scoped comment-author carrier.
+    if (el.getAttribute('action-type') === 'reply') {
+      addMatches(
+        el.getAttribute('action-data'),
+        /(?:^|[?&#;\s])ouid=(\d{5,})/g
+      );
+    }
+
     const href = el.getAttribute('href');
     addMatches(href, /\/u\/(\d{5,})/g);
     addMatches(href, /\/p\/100505(\d{5,})/g);
     addMatches(href, /^\/(\d{5,})(?:[/?#]|$)/g);
     addMatches(href, /weibo\.com\/(\d{5,})(?:[/?#]|$)/g);
-    addMatches(href, /(?:[?&#])(?:uid|ouid)=(\d{5,})/g);
 
     return uids;
   }
@@ -2791,6 +2891,8 @@
     el.removeAttribute(BLOCKED_CONTENT_HIDE_ATTR);
     el.removeAttribute(BLOCKED_CONTENT_UID_ATTR);
     el.removeAttribute(COMMENT_CONTENT_ROOT_ATTR);
+    el.removeAttribute(USER_CARD_CONTENT_ROOT_ATTR);
+    el.removeAttribute(INTERACTION_CONTENT_ROOT_ATTR);
     const originalAria = el.getAttribute(BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR);
     if (originalAria === BLOCKED_CONTENT_ARIA_ABSENT) {
       el.removeAttribute('aria-hidden');
@@ -2943,6 +3045,16 @@
     return normalizeProfileURL(href, uid);
   }
 
+  function isUserIdentityCarrierForUID(el, uid) {
+    return (
+      el instanceof Element &&
+      el.matches(
+        `${USER_CONTEXT_TARGET_SELECTOR},${USER_CONTEXT_NAME_TARGET_SELECTOR}`
+      ) &&
+      extractDOMUIDs(el).has(String(uid || '').trim())
+    );
+  }
+
   function getUserDisplayName(el, uid, root = null) {
     const candidates = [];
     const userRoots = [el, root, el.closest('a[href]')].filter(Boolean);
@@ -2960,14 +3072,22 @@
     }
 
     userRoots.forEach((item) => {
-      getElementsForUID(item, uid).forEach((candidateEl) => {
-        pushNameCandidate(candidates, getOwnDOMText(candidateEl), 100);
-        pushNameCandidate(
-          candidates,
-          getNameFromElementAttributes(candidateEl),
-          80
-        );
-      });
+      getElementsForUID(item, uid)
+        .filter((candidateEl) =>
+          isUserIdentityCarrierForUID(candidateEl, uid)
+        )
+        .forEach((candidateEl) => {
+          // A post permalink also contains the author's UID, but its visible
+          // text is a timestamp such as “10小时前”. Only explicit identity
+          // carriers may provide a display name, and their complete label is
+          // preferred so avatar aria-labels and nested name spans both work.
+          pushNameCandidate(candidates, getUserNameLabel(candidateEl), 100);
+          pushNameCandidate(
+            candidates,
+            getNameFromElementAttributes(candidateEl),
+            80
+          );
+        });
     });
 
     const directNameSource =
@@ -3000,8 +3120,222 @@
     return '';
   }
 
-  function elementHasUID(el, uid) {
-    return getElementsForUID(el, String(uid || '').trim()).length > 0;
+  function firstUIDWithinCarrier(carrier) {
+    if (!(carrier instanceof Element)) return '';
+    const directUID = firstDOMUID(carrier);
+    if (directUID) return directUID;
+    for (const candidate of carrier.querySelectorAll(DOM_UID_SELECTOR)) {
+      const uid = firstDOMUID(candidate);
+      if (uid) return uid;
+    }
+    return '';
+  }
+
+  function getPostOwnerUID(root) {
+    if (!isPostContentRoot(root)) return '';
+    if (isPersonCollectionRoot(root)) return '';
+    const directUID = firstDOMUID(root);
+    if (directUID) return directUID;
+
+    for (const carrier of root.querySelectorAll(
+      DOM_POST_AUTHOR_CARRIER_SELECTOR
+    )) {
+      const nestedComment = carrier.closest(DOM_COMMENT_ROOT_SELECTOR);
+      if (nestedComment && nestedComment !== root) continue;
+      const nestedUserCard = carrier.closest(
+        DOM_USER_CARD_ITEM_ROOT_SELECTOR
+      );
+      if (nestedUserCard && nestedUserCard !== root) continue;
+      const nestedPost = carrier.closest(DOM_POST_ROOT_SELECTOR);
+      if (nestedPost && nestedPost !== root) continue;
+      const uid = firstUIDWithinCarrier(carrier);
+      if (uid) return uid;
+    }
+    return '';
+  }
+
+  function getCommentOwnerUID(root) {
+    if (
+      !(root instanceof Element) ||
+      (!root.matches(DOM_COMMENT_ITEM_ROOT_SELECTOR) &&
+        !root.matches(DOM_COMMENT_ROOT_SELECTOR))
+    ) {
+      return '';
+    }
+    const directUID = firstDOMUID(root);
+    if (directUID) return directUID;
+
+    for (const carrier of root.querySelectorAll(
+      DOM_COMMENT_AUTHOR_CARRIER_SELECTOR
+    )) {
+      const nestedComment = carrier.closest(DOM_COMMENT_ROOT_SELECTOR);
+      if (nestedComment && nestedComment !== root) continue;
+      const uid = firstUIDWithinCarrier(carrier);
+      if (uid) return uid;
+    }
+    return '';
+  }
+
+  function getUniqueUnnestedUID(root) {
+    if (!(root instanceof Element)) return '';
+    const directUID = firstDOMUID(root);
+    if (directUID) return directUID;
+    const uids = new Set();
+    for (const candidate of root.querySelectorAll(DOM_UID_SELECTOR)) {
+      const nestedComment = candidate.closest(DOM_COMMENT_ROOT_SELECTOR);
+      if (nestedComment && nestedComment !== root) continue;
+      const nestedPost = candidate.closest(DOM_POST_ROOT_SELECTOR);
+      if (nestedPost && nestedPost !== root) continue;
+      const nestedUserCard = candidate.closest(
+        DOM_USER_CARD_ITEM_ROOT_SELECTOR
+      );
+      if (nestedUserCard && nestedUserCard !== root) continue;
+      extractDOMUIDs(candidate).forEach((uid) => uids.add(uid));
+      if (uids.size > 1) return '';
+    }
+    return uids.size === 1 ? [...uids][0] : '';
+  }
+
+  function getUserCardOwnerUID(root) {
+    if (!(root instanceof Element)) return '';
+    const directUID = firstDOMUID(root);
+    if (directUID) return directUID;
+    const mainCarrier = root.querySelector(
+      [
+        ':scope > a.name[href]',
+        ':scope > .content a.name[href]',
+        ':scope > .info a.name[href]',
+        'a.name[nick-name][href]',
+        'a.name[usercard][href]',
+        'a.name[data-user-card][href]',
+        'a.name[data-usercard][href]',
+        '[class*="_name_"][data-user-id]',
+        '[class*="_name_"][data-uid]',
+        '[class*="_name_"] a[href*="/u/"]',
+      ].join(',')
+    );
+    return firstUIDWithinCarrier(mainCarrier) || getUniqueUnnestedUID(root);
+  }
+
+  function isInteractionContentRoot(root) {
+    return (
+      root instanceof Element &&
+      (root.hasAttribute(INTERACTION_CONTENT_ROOT_ATTR) ||
+        !!root.closest(DOM_INTERACTION_SURFACE_SELECTOR))
+    );
+  }
+
+  function isUserCardContentRoot(root) {
+    return (
+      root instanceof Element &&
+      (root.hasAttribute(USER_CARD_CONTENT_ROOT_ATTR) ||
+        root.matches(DOM_USER_CARD_ITEM_ROOT_SELECTOR))
+    );
+  }
+
+  function isPersonCollectionRoot(root) {
+    if (!(root instanceof Element)) return false;
+    const items = Array.from(
+      root.querySelectorAll(DOM_USER_CARD_ITEM_ROOT_SELECTOR)
+    ).filter(
+      (candidate, _index, candidates) =>
+        !candidates.some(
+          (other) => other !== candidate && other.contains(candidate)
+        )
+    );
+    return items.length > 1;
+  }
+
+  function markPersonItemRoot(root, interaction = false) {
+    if (!(root instanceof Element)) return root;
+    root.setAttribute(
+      interaction
+        ? INTERACTION_CONTENT_ROOT_ATTR
+        : USER_CARD_CONTENT_ROOT_ATTR,
+      '1'
+    );
+    return root;
+  }
+
+  function findPersonItemRootForUID(el, uid) {
+    if (!(el instanceof Element) || !uid) return null;
+
+    const explicitUserCard = el.closest(DOM_USER_CARD_ITEM_ROOT_SELECTOR);
+    if (
+      explicitUserCard &&
+      !isPostContentRoot(explicitUserCard) &&
+      getUserCardOwnerUID(explicitUserCard) === uid &&
+      !isOverBroadHideRoot(explicitUserCard, el)
+    ) {
+      return markPersonItemRoot(
+        explicitUserCard,
+        !!explicitUserCard.closest(DOM_INTERACTION_SURFACE_SELECTOR)
+      );
+    }
+
+    const interactionSurface = el.closest(
+      DOM_INTERACTION_SURFACE_SELECTOR
+    );
+    if (!interactionSurface) return null;
+    const interactionItem = el.closest(
+      DOM_INTERACTION_ITEM_ROOT_SELECTOR
+    );
+    if (
+      interactionItem &&
+      interactionItem !== interactionSurface &&
+      interactionSurface.contains(interactionItem) &&
+      !isPostContentRoot(interactionItem) &&
+      getUserCardOwnerUID(interactionItem) === uid &&
+      !isOverBroadHideRoot(interactionItem, el)
+    ) {
+      return markPersonItemRoot(interactionItem, true);
+    }
+    return null;
+  }
+
+  function getTopLevelSemanticRoots(root) {
+    if (!(root instanceof Element)) return [];
+    const selector = [
+      DOM_POST_ROOT_SELECTOR,
+      DOM_COMMENT_ITEM_ROOT_SELECTOR,
+      DOM_USER_CARD_ITEM_ROOT_SELECTOR,
+      `[${USER_CARD_CONTENT_ROOT_ATTR}]`,
+      `[${INTERACTION_CONTENT_ROOT_ATTR}]`,
+    ].join(',');
+    return Array.from(root.querySelectorAll(selector)).filter(
+      (candidate, _index, candidates) =>
+        !candidates.some(
+          (other) => other !== candidate && other.contains(candidate)
+        )
+    );
+  }
+
+  function getContentRootOwnerUID(root) {
+    if (!(root instanceof Element)) return '';
+    if (
+      root.matches(DOM_COMMENT_ITEM_ROOT_SELECTOR) ||
+      isCommentContentRoot(root)
+    ) {
+      return getCommentOwnerUID(root);
+    }
+    if (
+      isInteractionContentRoot(root) ||
+      isUserCardContentRoot(root)
+    ) {
+      return getUserCardOwnerUID(root);
+    }
+    if (isPostContentRoot(root)) return getPostOwnerUID(root);
+    const directUID = firstDOMUID(root);
+    if (directUID) return directUID;
+
+    const semanticRoots = getTopLevelSemanticRoots(root);
+    if (semanticRoots.length !== 1) return '';
+    return getContentRootOwnerUID(semanticRoots[0]);
+  }
+
+  function contentRootOwnedByUID(root, uid) {
+    const id = String(uid || '').trim();
+    return /^\d{5,}$/.test(id) && getContentRootOwnerUID(root) === id;
   }
 
   function getPrimaryContentRoots(el) {
@@ -3102,8 +3436,7 @@
 
   function isUnsafePostRootForUID(root, uid) {
     if (!isPostContentRoot(root) || !uid) return false;
-    const primaryUID = firstDOMUID(root);
-    return !!(primaryUID && primaryUID !== uid);
+    return getPostOwnerUID(root) !== String(uid);
   }
 
   function looksLikeCommentRoot(el, source = null) {
@@ -3144,8 +3477,21 @@
     return root;
   }
 
+  function isCommentCollectionRoot(el) {
+    if (!(el instanceof Element)) return false;
+    if (el.matches(DOM_COMMENT_COLLECTION_SELECTOR)) return true;
+    const directCommentItems = Array.from(el.children || []).filter((child) =>
+      child.matches?.(DOM_COMMENT_ITEM_ROOT_SELECTOR)
+    );
+    return directCommentItems.length > 1;
+  }
+
   function isCommentContentRoot(el) {
-    return el instanceof Element && el.matches(DOM_COMMENT_ROOT_SELECTOR);
+    return (
+      el instanceof Element &&
+      el.matches(DOM_COMMENT_ROOT_SELECTOR) &&
+      !isCommentCollectionRoot(el)
+    );
   }
 
   function isInsideCommentContentRoot(el) {
@@ -3180,14 +3526,6 @@
     return el instanceof Element && !!el.closest(COMMENT_SURFACE_SELECTOR);
   }
 
-  function hasUIDOutsideCommentRoots(root, uid) {
-    const id = String(uid || '').trim();
-    if (!(root instanceof Element) || !/^\d{5,}$/.test(id)) return false;
-    return getElementsForUID(root, id).some(
-      (candidate) => !findCommentRootForUID(candidate, id)
-    );
-  }
-
   function findCommentRootForUID(el, uid) {
     if (!(el instanceof Element) || !uid || isRelationshipListPage()) {
       return null;
@@ -3199,10 +3537,19 @@
     ) {
       return null;
     }
+    const explicitItem = el.closest(DOM_COMMENT_ITEM_ROOT_SELECTOR);
+    if (
+      explicitItem &&
+      getCommentOwnerUID(explicitItem) === uid &&
+      !isOverBroadHideRoot(explicitItem, el)
+    ) {
+      return markCommentRoot(explicitItem);
+    }
     const explicit = el.closest(DOM_COMMENT_ROOT_SELECTOR);
     if (
       explicit &&
-      elementHasUID(explicit, uid) &&
+      !isCommentCollectionRoot(explicit) &&
+      getCommentOwnerUID(explicit) === uid &&
       !isOverBroadHideRoot(explicit, el)
     ) {
       return markCommentRoot(explicit);
@@ -3222,7 +3569,8 @@
     ) {
       if (isPostContentRoot(cur) || cur.matches(VIRTUAL_VIEW_SELECTOR)) break;
       if (
-        elementHasUID(cur, uid) &&
+        !isCommentCollectionRoot(cur) &&
+        getCommentOwnerUID(cur) === uid &&
         !isOverBroadHideRoot(cur, el) &&
         looksLikeCommentRoot(cur, el)
       ) {
@@ -3230,7 +3578,8 @@
       }
       if (
         !fallback &&
-        elementHasUID(cur, uid) &&
+        !isCommentCollectionRoot(cur) &&
+        getCommentOwnerUID(cur) === uid &&
         !isOverBroadHideRoot(cur, el) &&
         cur.children.length >= 2
       ) {
@@ -3249,12 +3598,18 @@
 
     const commentRoot = findCommentRootForUID(el, uid);
     if (commentRoot) return commentRoot;
+    const personItemRoot = findPersonItemRootForUID(el, uid);
+    if (personItemRoot) return personItemRoot;
+    // A user identity found inside a comment surface must never fall back to
+    // the enclosing post. If an individual comment boundary is unknown, fail
+    // closed and leave the DOM visible rather than hiding the blogger's post.
+    if (isInsideCommentSurface(el)) return null;
 
     const explicit = el.closest(DOM_CONTENT_ROOT_SELECTOR);
     if (
       explicit &&
-      elementHasUID(explicit, uid) &&
-      !isUnsafePostRootForUID(explicit, uid) &&
+      !isCommentCollectionRoot(explicit) &&
+      contentRootOwnedByUID(explicit, uid) &&
       !isOverBroadHideRoot(explicit, el)
     ) {
       return explicit;
@@ -3269,8 +3624,8 @@
       depth < 10
     ) {
       if (
-        elementHasUID(cur, uid) &&
-        !isUnsafePostRootForUID(cur, uid) &&
+        !isCommentCollectionRoot(cur) &&
+        contentRootOwnedByUID(cur, uid) &&
         !isOverBroadHideRoot(cur, el) &&
         looksLikeContentRoot(cur)
       ) {
@@ -3335,9 +3690,11 @@
 
   function findHideShell(root) {
     if (!(root instanceof Element)) return null;
+    if (isCommentCollectionRoot(root)) return null;
     const commentRoot = root.closest(DOM_COMMENT_ROOT_SELECTOR);
     if (
       commentRoot &&
+      !isCommentCollectionRoot(commentRoot) &&
       isEligibleVirtualScrollerItem(commentRoot) &&
       !isOverBroadHideRoot(commentRoot, root)
     ) {
@@ -3345,6 +3702,16 @@
     }
 
     const virtualView = root.closest(VIRTUAL_VIEW_SELECTOR);
+    if (
+      (isUserCardContentRoot(root) ||
+        isInteractionContentRoot(root)) &&
+      !virtualView
+    ) {
+      return isEligibleVirtualScrollerItem(root) &&
+        !isOverBroadHideRoot(root)
+        ? root
+        : null;
+    }
     if (
       virtualView &&
       isEligibleVirtualScrollerItem(virtualView) &&
@@ -3452,9 +3819,17 @@
     ) {
       return false;
     }
+    if (isCommentCollectionRoot(root)) return false;
+    const id = String(uid || '').trim();
+    if (/^\d{5,}$/.test(id) && !contentRootOwnedByUID(root, id)) {
+      return false;
+    }
     const target = findHideShell(root);
     if (
       !(target instanceof Element) ||
+      isCommentCollectionRoot(target) ||
+      isPersonCollectionRoot(target) ||
+      (/^\d{5,}$/.test(id) && isUnsafePostRootForUID(target, id)) ||
       target.matches(USER_SCRIPT_UI_SELECTOR) ||
       target.closest(USER_SCRIPT_UI_SELECTOR) ||
       target.hasAttribute(BLOCKED_CONTENT_HIDE_ATTR)
@@ -3470,7 +3845,6 @@
         : BLOCKED_CONTENT_ARIA_ABSENT
     );
     target.setAttribute(BLOCKED_CONTENT_HIDE_ATTR, '1');
-    const id = String(uid || '').trim();
     if (/^\d{5,}$/.test(id)) {
       target.setAttribute(BLOCKED_CONTENT_UID_ATTR, id);
     }
@@ -3999,16 +4373,11 @@
     '.card-wrap[action-type="feed_list_item"]',
     '.card-wrap[mid]',
   ].join(',');
-  const SEARCH_RESULT_AUTHOR_SELECTOR = [
-    '.card-feed .content > .info a.name[href]',
-    '.card-feed .content > .info [nick-name]',
-    '.card-feed .avator a[href]',
-    '.card-feed .avatar a[href]',
-    '.content > .info a.name[href]',
-  ].join(',');
 
   function getBlacklistDOMCategory(root) {
     if (!(root instanceof Element)) return 'posts';
+    if (isInteractionContentRoot(root)) return 'interactions';
+    if (isUserCardContentRoot(root)) return 'userCards';
     if (
       isWeiboSearchResultPage() &&
       root.closest('.card-wrap') &&
@@ -4041,6 +4410,9 @@
     }
     if (category === 'userCards') {
       return CONTENT_FILTER_CFG.hideBlacklistUserCards;
+    }
+    if (category === 'interactions') {
+      return CONTENT_FILTER_CFG.hideBlacklistInteractions;
     }
     return CONTENT_FILTER_CFG.hideBlacklistPosts;
   }
@@ -4230,13 +4602,20 @@
         explicitName || getUserDisplayName(nameSource || source, uid, card);
       const url = getProfileURL(nameSource || source, uid, card);
       if (!url) return null;
+      const resolvedRoot = findContentRootForUID(source, uid);
+      const cardAuthorUID = firstDOMUID(
+        card.querySelector(SEARCH_RESULT_AUTHOR_SELECTOR)
+      );
+      const safeCardRoot = cardAuthorUID === uid ? card : null;
 
       return {
         uid,
         url,
         name,
         source,
-        root: card,
+        // A comment author belongs to one comment row, not to the surrounding
+        // search-result card. Only the card's primary author may own the card.
+        root: resolvedRoot || safeCardRoot,
       };
     };
 
@@ -4378,7 +4757,11 @@
     if (!url) return null;
     const root = findContentRootForUID(source, uid);
     const fallbackRoot =
-      post && !isUnsafePostRootForUID(post, uid) ? post : null;
+      post &&
+      isPostContentRoot(post) &&
+      !isUnsafePostRootForUID(post, uid)
+        ? post
+        : null;
 
     return {
       uid,
@@ -5033,13 +5416,7 @@
       .forEach((node) => nodes.push(node));
 
     Array.from(new Set(nodes)).forEach((node) => {
-      if (
-        !(node instanceof Element) ||
-        !node.closest(VIRTUAL_VIEW_SELECTOR) ||
-        isInsideCommentContentRoot(node)
-      ) {
-        return;
-      }
+      if (!(node instanceof Element)) return;
       // Migrate legacy outer-view markers immediately. New builds only hide
       // the direct content shell, which lets Vue keep ownership of recycling.
       if (node.matches(VIRTUAL_VIEW_SELECTOR)) {
@@ -5052,10 +5429,11 @@
       const stillRepresentsBlockedUser =
         /^\d{5,}$/.test(uid) &&
         BL.has(uid) &&
-        hasUIDOutsideCommentRoots(node, uid);
+        contentRootOwnedByUID(node, uid);
       if (!stillRepresentsBlockedUser) {
-        // Vue reuses the same shell for another post while scrolling. Never
-        // let a marker from the previous blocked author hide the recycled row.
+        // Vue and the search/comment views can patch an existing DOM shell for
+        // another owner. Revalidate every hidden content type, including
+        // comments and non-virtual cards, before allowing the marker to persist.
         clearOwnBlockedContentHideState(node);
       }
     });

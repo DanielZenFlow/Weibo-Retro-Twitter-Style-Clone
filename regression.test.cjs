@@ -103,10 +103,20 @@ const userContextSelectorSource = sourceBetween(
   '  const USER_CONTEXT_TARGET_SELECTOR = [',
   '  function getUserNameLabel('
 );
+const domUIDSelectorSource = sourceBetween(
+  '  const DOM_UID_SELECTOR = [',
+  '  const DOM_POST_ROOT_SELECTOR = ['
+);
 assert.match(userContextSelectorSource, /'\.woo-avatar-main'/);
 assert.match(userContextSelectorSource, /'\.woo-avatar-img'/);
 assert.match(userContextSelectorSource, /'\[usercard\^="name=@"\]'/);
 assert.match(userContextSelectorSource, /'header a\[href=""\]'/);
+assert.doesNotMatch(userContextSelectorSource, /\[action-data\*=/);
+assert.doesNotMatch(domUIDSelectorSource, /'\[action-data\*=/);
+assert.match(
+  domUIDSelectorSource,
+  /'\[action-type="reply"\]\[action-data\*="ouid="\]'/
+);
 const extractDOMUIDsSource = sourceBetween(
   '  function extractDOMUIDs(el) {',
   '  function collectScopedUserContextUIDs('
@@ -149,6 +159,89 @@ assert.deepEqual(
 assert.deepEqual(
   Array.from(
     uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({
+        href: 'https://m.s.weibo.com/claim/apply?object_id=1022:100808&uid=1635218563',
+      })
+    )
+  ),
+  []
+);
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({
+        'action-type': 'topicShare',
+        'action-data': 'uid=1618051664&title=share',
+      })
+    )
+  ),
+  []
+);
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
+      fakeUIDElement({
+        'action-type': 'reply',
+        'action-data': 'ouid=7580422220&cid=5325737454211807',
+      })
+    )
+  ),
+  ['7580422220']
+);
+const identityCarrierSource = sourceBetween(
+  '  function isUserIdentityCarrierForUID(',
+  '  function getUserDisplayName('
+);
+class FakeIdentityCarrier {
+  constructor({ identity = false, uids = [] } = {}) {
+    this.identity = identity;
+    this.uids = uids;
+  }
+  matches() {
+    return this.identity;
+  }
+}
+const identityCarrierSandbox = {
+  Element: FakeIdentityCarrier,
+  USER_CONTEXT_TARGET_SELECTOR: '.identity-target',
+  USER_CONTEXT_NAME_TARGET_SELECTOR: '.identity-name',
+  extractDOMUIDs: (el) => new Set(el.uids),
+};
+vm.runInNewContext(
+  `${identityCarrierSource}
+globalThis.isUserIdentityCarrierForUIDForTest = isUserIdentityCarrierForUID;`,
+  identityCarrierSandbox
+);
+assert.equal(
+  identityCarrierSandbox.isUserIdentityCarrierForUIDForTest(
+    new FakeIdentityCarrier({ identity: true, uids: ['7492781550'] }),
+    '7492781550'
+  ),
+  true
+);
+assert.equal(
+  identityCarrierSandbox.isUserIdentityCarrierForUIDForTest(
+    new FakeIdentityCarrier({ identity: false, uids: ['7492781550'] }),
+    '7492781550'
+  ),
+  false,
+  'a post permalink timestamp must not be accepted as a user-name carrier'
+);
+const userDisplayNameSource = sourceBetween(
+  '  function getUserDisplayName(',
+  '  function firstDOMUID('
+);
+assert.match(
+  userDisplayNameSource,
+  /\.filter\(\(candidateEl\) =>[\s\S]*?isUserIdentityCarrierForUID\(candidateEl, uid\)/
+);
+assert.match(
+  userDisplayNameSource,
+  /pushNameCandidate\(candidates, getUserNameLabel\(candidateEl\), 100\)/
+);
+assert.deepEqual(
+  Array.from(
+    uidParserSandbox.extractDOMUIDsForTest(
       fakeUIDElement({ usercard: 'name=@_苏世独立_横而不流' })
     )
   ),
@@ -173,6 +266,10 @@ assert.match(
 assert.doesNotMatch(
   userContextResolverSource,
   /firstDOMUID\(source,\s*post\)/
+);
+assert.match(
+  userContextResolverSource,
+  /post &&[\s\S]*?isPostContentRoot\(post\)[\s\S]*?!isUnsafePostRootForUID\(post, uid\)/
 );
 assert.match(
   sourceBetween(
@@ -430,8 +527,8 @@ assert.equal(
   '设置向导',
   'the onboarding launcher must be the first section on the General tab'
 );
-assert.match(source, /@version\s+2\.3\.3/);
-assert.match(source, /const SCRIPT_VERSION = '2\.3\.3'/);
+assert.match(source, /@version\s+2\.3\.4/);
+assert.match(source, /const SCRIPT_VERSION = '2\.3\.4'/);
 // 元数据版本号与运行时常量必须始终一致，否则设置面板会显示错误版本。
 assert.equal(
   source.match(/@version\s+(\S+)/)?.[1],
@@ -553,14 +650,212 @@ assert.equal(
 assert.equal(settingsConfigSyncEvents.length, 1);
 assert.equal(settingsConfigSyncEvents[0].type, 'wbset:config-sync');
 assert.match(source, /if \(!isInsideCommentSurface\(el\)\) return null/);
+assert.match(
+  source,
+  /const DOM_COMMENT_ITEM_ROOT_SELECTOR = \[[\s\S]*?\.card-review\[comment_id\]/
+);
+assert.match(
+  source,
+  /const DOM_COMMENT_COLLECTION_SELECTOR = \[[\s\S]*?feed_list_commentList/
+);
+assert.match(
+  source,
+  /DOM_COMMENT_AUTHOR_CARRIER_SELECTOR[\s\S]*?item1in[\s\S]*?a:first-child/
+);
+assert.match(
+  source,
+  /const DOM_USER_CARD_ITEM_ROOT_SELECTOR = \[[\s\S]*?\.card-user-b/
+);
 const commentRootSource = sourceBetween(
   '  function findCommentRootForUID(',
   '  function findContentRootForUID('
 );
+assert.match(
+  commentRootSource,
+  /const explicitItem = el\.closest\(DOM_COMMENT_ITEM_ROOT_SELECTOR\)/
+);
+assert.match(
+  commentRootSource,
+  /explicit &&[\s\S]*?!isCommentCollectionRoot\(explicit\)/
+);
+assert.match(
+  commentRootSource,
+  /getCommentOwnerUID\(explicitItem\) === uid/
+);
+assert.doesNotMatch(commentRootSource, /elementHasUID\(/);
 assert.ok(
   commentRootSource.indexOf('if (!isInsideCommentSurface(el)) return null;') <
     commentRootSource.indexOf('let fallback = null;'),
   'non-comment author links must be rejected before generic comment fallback'
+);
+const personItemRootSource = sourceBetween(
+  '  function findPersonItemRootForUID(',
+  '  function getTopLevelSemanticRoots('
+);
+assert.match(
+  personItemRootSource,
+  /const explicitUserCard = el\.closest\(DOM_USER_CARD_ITEM_ROOT_SELECTOR\)/
+);
+assert.match(
+  personItemRootSource,
+  /getUserCardOwnerUID\(explicitUserCard\) === uid/
+);
+assert.match(
+  personItemRootSource,
+  /markPersonItemRoot\(\s*explicitUserCard/
+);
+assert.match(
+  source,
+  /function isPersonCollectionRoot\(root\)[\s\S]*?return items\.length > 1/
+);
+const contentRootSource = sourceBetween(
+  '  function findContentRootForUID(',
+  '  function shouldPromoteFeedShell('
+);
+assert.match(
+  contentRootSource,
+  /if \(isInsideCommentSurface\(el\)\) return null;/
+);
+assert.match(
+  contentRootSource,
+  /!isCommentCollectionRoot\(explicit\)/
+);
+assert.match(
+  contentRootSource,
+  /const personItemRoot = findPersonItemRootForUID\(el, uid\)/
+);
+assert.match(
+  contentRootSource,
+  /contentRootOwnedByUID\(explicit, uid\)/
+);
+assert.doesNotMatch(contentRootSource, /elementHasUID\(/);
+const rootOwnershipGuardSource = sourceBetween(
+  '  function contentRootOwnedByUID(',
+  '  function getPrimaryContentRoots('
+);
+const rootOwnershipGuardSandbox = {
+  getContentRootOwnerUID(root) {
+    return root.ownerUID || '';
+  },
+};
+vm.runInNewContext(
+  `${rootOwnershipGuardSource}
+globalThis.contentRootOwnedByUIDForTest = contentRootOwnedByUID;`,
+  rootOwnershipGuardSandbox
+);
+const normalPostMentioningBlockedUser = {
+  ownerUID: '5999521555',
+  descendantUIDs: ['5999521555', '7580422220'],
+};
+assert.equal(
+  rootOwnershipGuardSandbox.contentRootOwnedByUIDForTest(
+    normalPostMentioningBlockedUser,
+    '7580422220'
+  ),
+  false,
+  'a blocked UID mentioned inside a normal post must not own the post'
+);
+assert.equal(
+  rootOwnershipGuardSandbox.contentRootOwnedByUIDForTest(
+    normalPostMentioningBlockedUser,
+    '5999521555'
+  ),
+  true,
+  'only the primary author may own a post root'
+);
+assert.match(
+  searchContextResolverSource,
+  /const resolvedRoot = findContentRootForUID\(source, uid\)/
+);
+assert.match(
+  searchContextResolverSource,
+  /const safeCardRoot = cardAuthorUID === uid \? card : null/
+);
+assert.match(
+  searchContextResolverSource,
+  /root: resolvedRoot \|\| safeCardRoot/
+);
+class FakeSearchContextElement {
+  constructor({ uid = '', name = '', card = null, resolvedRoot = null } = {}) {
+    this.uid = uid;
+    this.name = name;
+    this.card = card;
+    this.resolvedRoot = resolvedRoot;
+    this.children = [];
+  }
+  closest() {
+    return this.card;
+  }
+}
+const fakeSearchCard = new FakeSearchContextElement();
+fakeSearchCard.contains = () => true;
+fakeSearchCard.querySelector = (selector) =>
+  selector === '.search-author' ? fakeSearchCard.author : null;
+const fakeSearchPostAuthor = new FakeSearchContextElement({
+  uid: '5999521555',
+  name: '清纯痣',
+  card: fakeSearchCard,
+  resolvedRoot: fakeSearchCard,
+});
+const fakeSearchCommentRow = new FakeSearchContextElement();
+const fakeSearchCommentAuthor = new FakeSearchContextElement({
+  uid: '7580422220',
+  name: '抠脚煤女',
+  card: fakeSearchCard,
+  resolvedRoot: fakeSearchCommentRow,
+});
+fakeSearchCard.author = fakeSearchPostAuthor;
+const searchContextSandbox = {
+  Element: FakeSearchContextElement,
+  SEARCH_RESULT_AUTHOR_SELECTOR: '.search-author',
+  isWeiboSearchResultPage: () => true,
+  getUserNameContextTarget: (el) => el,
+  firstDOMUID: (el) => el?.uid || '',
+  cleanUserDisplayName: (value) => String(value || ''),
+  getNameFromElementAttributes: (el) => el?.name || '',
+  getOwnDOMText: (el) => el?.name || '',
+  getUserDisplayName: (el) => el?.name || '',
+  getProfileURL: (_el, uid) => `https://weibo.com/u/${uid}`,
+  findContentRootForUID: (source) => source?.resolvedRoot || null,
+};
+vm.runInNewContext(
+  `${searchContextResolverSource}
+globalThis.getSearchResultUserContextForTest = getSearchResultUserContext;`,
+  searchContextSandbox
+);
+assert.equal(
+  searchContextSandbox.getSearchResultUserContextForTest(
+    fakeSearchCommentAuthor
+  ).root,
+  fakeSearchCommentRow,
+  'a search-page comment author must own only the individual comment row'
+);
+fakeSearchCommentAuthor.resolvedRoot = null;
+assert.equal(
+  searchContextSandbox.getSearchResultUserContextForTest(
+    fakeSearchCommentAuthor
+  ).root,
+  null,
+  'an unresolved comment boundary must never fall back to the blogger card'
+);
+assert.equal(
+  searchContextSandbox.getSearchResultUserContextForTest(
+    fakeSearchPostAuthor
+  ).root,
+  fakeSearchCard,
+  'the search-result card may still be owned by its primary post author'
+);
+const blacklistDOMCategorySource = sourceBetween(
+  '  function getBlacklistDOMCategory(',
+  '  function findExplicitAdRoot('
+);
+assert.match(
+  blacklistDOMCategorySource,
+  /isInteractionContentRoot\(root\)[\s\S]*?return 'interactions'/
+);
+assert.match(
+  blacklistDOMCategorySource,
+  /category === 'interactions'[\s\S]*?hideBlacklistInteractions/
 );
 const immediateBlockSource = sourceBetween(
   '  async function addContextUserToBL(',
@@ -587,6 +882,10 @@ assert.match(
   /target\.parentElement !== virtualView/
 );
 assert.doesNotMatch(hideShellSource, /return virtualView;/);
+assert.match(
+  hideShellSource,
+  /isUserCardContentRoot\(root\)[\s\S]*?!virtualView/
+);
 const virtualGapSource = sourceBetween(
   '  function compactVirtualScrollerGaps(',
   '  function isWeiboSearchResultPage('
@@ -719,12 +1018,29 @@ assert.deepEqual(
   },
   { width: 640, height: 1.988 }
 );
+const hideContentRootSource = sourceBetween(
+  '  function hideContentRoot(',
+  '  let floatingVideoSuppressUntil ='
+);
 assert.match(
-  sourceBetween(
-    '  function hideContentRoot(',
-    '  let floatingVideoSuppressUntil ='
-  ),
+  hideContentRootSource,
   /BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR[\s\S]*?target\.setAttribute\(BLOCKED_CONTENT_HIDE_ATTR[\s\S]*?requestNativeVirtualItemRemeasure\(target\)/
+);
+assert.match(
+  hideContentRootSource,
+  /if \(isCommentCollectionRoot\(root\)\) return false;/
+);
+assert.match(
+  hideContentRootSource,
+  /isUnsafePostRootForUID\(target, id\)/
+);
+assert.match(
+  hideContentRootSource,
+  /!contentRootOwnedByUID\(root, id\)/
+);
+assert.match(
+  hideContentRootSource,
+  /isPersonCollectionRoot\(target\)/
 );
 const floatingVideoSuppressionSource = sourceBetween(
   '  function suppressFloatingVideoPlayers(',
@@ -799,6 +1115,8 @@ const blockedRestoreContext = vm.createContext({
   BLOCKED_CONTENT_ORIGINAL_ARIA_ATTR: 'data-original-aria',
   BLOCKED_CONTENT_ARIA_ABSENT: '__absent__',
   COMMENT_CONTENT_ROOT_ATTR: 'data-comment-root',
+  USER_CARD_CONTENT_ROOT_ATTR: 'data-user-card-root',
+  INTERACTION_CONTENT_ROOT_ATTR: 'data-interaction-root',
   requestNativeVirtualItemRemeasure() {
     remeasureProbe.calls += 1;
   },
@@ -812,6 +1130,8 @@ const nativeStyledCard = new FakeRestorableElement({
   'data-hidden': '1',
   'data-hidden-uid': '123456',
   'data-comment-root': '1',
+  'data-user-card-root': '1',
+  'data-interaction-root': '1',
   'data-original-aria': 'false',
   'aria-hidden': 'true',
 });
@@ -822,6 +1142,8 @@ assert.equal(nativeStyledCard.style.cssText, nativeStyleBeforeRestore);
 assert.equal(nativeStyledCard.hasAttribute('data-hidden'), false);
 assert.equal(nativeStyledCard.hasAttribute('data-hidden-uid'), false);
 assert.equal(nativeStyledCard.hasAttribute('data-comment-root'), false);
+assert.equal(nativeStyledCard.hasAttribute('data-user-card-root'), false);
+assert.equal(nativeStyledCard.hasAttribute('data-interaction-root'), false);
 assert.equal(nativeStyledCard.hasAttribute('data-original-aria'), false);
 const nativeCardWithoutAria = new FakeRestorableElement({
   'data-hidden': '1',
@@ -1326,6 +1648,9 @@ const hideShellContext = vm.createContext({
   document: { body: null, documentElement: null },
   isEligibleVirtualScrollerItem: () => true,
   isOverBroadHideRoot: () => false,
+  isCommentCollectionRoot: () => false,
+  isUserCardContentRoot: () => false,
+  isInteractionContentRoot: () => false,
   shouldPromoteFeedShell: () => false,
 });
 vm.runInContext(
@@ -1350,55 +1675,12 @@ const recycledShellSource = sourceBetween(
   '  function restoreRecycledVirtualContentShells(',
   '  function hideBlockedDOMPosts('
 );
-const uidOutsideCommentRootsSource = sourceBetween(
-  '  function hasUIDOutsideCommentRoots(',
-  '  function findCommentRootForUID('
-);
-assert.match(
-  uidOutsideCommentRootsSource,
-  /getElementsForUID\(root, id\)\.some/
-);
-assert.match(
-  uidOutsideCommentRootsSource,
-  /!findCommentRootForUID\(candidate, id\)/
-);
-class FakeUIDScope {
-  constructor(candidates = []) {
-    this.candidates = candidates;
-  }
-}
-const uidOutsideCommentRootsSandbox = {
-  Element: FakeUIDScope,
-  getElementsForUID(root) {
-    return root.candidates;
-  },
-  findCommentRootForUID(candidate) {
-    return candidate.commentRoot ? {} : null;
-  },
-};
-vm.runInNewContext(
-  `${uidOutsideCommentRootsSource}
-globalThis.hasUIDOutsideCommentRootsForTest = hasUIDOutsideCommentRoots;`,
-  uidOutsideCommentRootsSandbox
-);
-assert.equal(
-  uidOutsideCommentRootsSandbox.hasUIDOutsideCommentRootsForTest(
-    new FakeUIDScope([{ commentRoot: true }]),
-    '5288245215'
-  ),
-  false,
-  'a blocked UID found only in comments must not keep a recycled feed shell hidden'
-);
-assert.equal(
-  uidOutsideCommentRootsSandbox.hasUIDOutsideCommentRootsForTest(
-    new FakeUIDScope([{ commentRoot: true }, { commentRoot: false }]),
-    '5288245215'
-  ),
-  true,
-  'a blocked feed author outside comment roots must keep its content shell hidden'
-);
 assert.match(recycledShellSource, /node\.matches\(VIRTUAL_VIEW_SELECTOR\)/);
-assert.match(recycledShellSource, /hasUIDOutsideCommentRoots\(node, uid\)/);
+assert.match(recycledShellSource, /contentRootOwnedByUID\(node, uid\)/);
+assert.doesNotMatch(
+  recycledShellSource,
+  /isInsideCommentContentRoot\(node\)/
+);
 assert.match(
   recycledShellSource,
   /clearOwnBlockedContentHideState\(node\)/
